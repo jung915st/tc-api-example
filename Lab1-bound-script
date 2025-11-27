@@ -1,0 +1,350 @@
+**繫結式腳本（Bound Script）** 是直接依附在某個 Google 文件（試算表、文件、簡報、表單）下的腳本。
+
+**特點：**
+- ✅ 與文件綁定，無法分離
+- ✅ 可直接存取所在的文件
+- ✅ 可建立自訂選單和 UI
+- ✅ 適合單一檔案的自動化
+
+**建立方式：**
+1. 開啟 Google 試算表
+2. 點擊「擴充功能」→「Apps Script」
+
+---
+
+## 方法 1：繫結式腳本（Bound Script）
+
+### 📋 使用場景
+- 為**特定試算表**建立自動化功能
+- 需要自訂選單和 UI 互動
+- 團隊共享文件時一起共享腳本
+
+### 🎯 建立步驟
+
+#### 步驟 1：開啟試算表並建立腳本
+1. 開啟或建立一個 Google 試算表
+2. 點擊「擴充功能」→「Apps Script」
+3. 刪除預設的程式碼
+4. 貼上下方的完整程式碼
+
+#### 步驟 2：完整程式碼
+
+```javascript
+/**
+ * ==========================================
+ * 繫結式腳本版本 - 天氣資料抓取工具
+ * ==========================================
+ * 此腳本依附於當前試算表，可直接使用 getActiveSpreadsheet()
+ */
+
+/**
+ * 當試算表開啟時自動執行，建立自訂選單
+ */
+function onOpen() {
+  const ui = SpreadsheetApp.getUi();
+  ui.createMenu('🌤️ 天氣工具')
+    .addItem('📥 更新天氣資料', 'fetchWeatherDataBound')
+    .addItem('⚙️ 設定 API Key', 'setupCWAApiKeyWithUI')
+    .addItem('🗑️ 清除資料', 'clearWeatherData')
+    .addSeparator()
+    .addItem('🔍 除錯 API', 'debugAPIResponse')
+    .addItem('📖 使用說明', 'showHelp')
+    .addToUi();
+  
+  Logger.log('✅ 自訂選單已建立');
+}
+
+/**
+ * 安全的日期格式化函式
+ */
+function formatDate(date) {
+  try {
+    if (!date || isNaN(date.getTime())) {
+      return '日期無效';
+    }
+    const timezone = Session.getScriptTimeZone();
+    return Utilities.formatDate(date, timezone, 'yyyy/MM/dd HH:mm:ss');
+  } catch (e) {
+    return '無法格式化日期';
+  }
+}
+
+/**
+ * 設定 API Key（帶 UI）
+ */
+function setupCWAApiKeyWithUI() {
+  const ui = SpreadsheetApp.getUi();
+  
+  const response = ui.prompt(
+    '⚙️ 設定中央氣象署 API Key',
+    '請輸入您的 API Key (格式: CWA-XXXXXXXX-...)：',
+    ui.ButtonSet.OK_CANCEL
+  );
+  
+  if (response.getSelectedButton() == ui.Button.OK) {
+    const apiKey = response.getResponseText().trim();
+    
+    if (apiKey && apiKey.startsWith('CWA-')) {
+      PropertiesService.getScriptProperties().setProperty('CWA_API_KEY', apiKey);
+      ui.alert('✅ API Key 已成功儲存！', ui.ButtonSet.OK);
+      Logger.log('✅ API Key 已儲存');
+    } else {
+      ui.alert('⚠️ API Key 格式不正確', '請確認格式為: CWA-XXXXXXXX-...', ui.ButtonSet.OK);
+    }
+  }
+}
+
+/**
+ * 取得 API Key
+ */
+function getCWAApiKey() {
+  return PropertiesService.getScriptProperties().getProperty('CWA_API_KEY');
+}
+
+/**
+ * 主函式：取得天氣資料並寫入試算表（繫結式版本）
+ * ✅ 可以使用 getActiveSpreadsheet()
+ * ✅ 可以使用 getUi()
+ */
+function fetchWeatherDataBound() {
+  const ui = SpreadsheetApp.getUi();
+  
+  // ✅ 繫結式腳本可以直接使用 getActiveSpreadsheet()
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("天氣預報") || ss.insertSheet("天氣預報");
+
+  try {
+    // 1. 取得 API Key
+    const apiKey = getCWAApiKey();
+    if (!apiKey) {
+      ui.alert('⚠️ 找不到 API Key', '請先執行「⚙️ 設定 API Key」', ui.ButtonSet.OK);
+      return;
+    }
+
+    // 2. 組合 API 端點 URL
+    const baseUrl = 'https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001';
+    const params = {
+      'Authorization': apiKey,
+      'format': 'JSON'
+    };
+    const queryString = Object.keys(params)
+      .map(k => `${k}=${encodeURIComponent(params[k])}`)
+      .join('&');
+    const url = `${baseUrl}?${queryString}`;
+
+    Logger.log('📡 正在呼叫 API...');
+
+    // 3. 使用 UrlFetchApp 發出 GET 請求
+    const response = UrlFetchApp.fetch(url, {
+      muteHttpExceptions: true
+    });
+
+    // 4. 檢查 HTTP 狀態碼
+    const statusCode = response.getResponseCode();
+    if (statusCode !== 200) {
+      throw new Error(`API 請求失敗 (狀態碼: ${statusCode})`);
+    }
+
+    // 5. 取得回應內容並解析 JSON 字串
+    const jsonString = response.getContentText();
+    const data = JSON.parse(jsonString);
+
+    // 6. 驗證資料結構
+    if (!data.success || !data.records || !data.records.location) {
+      throw new Error('API 資料格式不符');
+    }
+
+    // 7. 整理資料
+    const locations = data.records.location;
+    const outputData = [];
+
+    outputData.push([
+      '縣市', '天氣現象', '最低溫 (°C)', '最高溫 (°C)', 
+      '舒適度', '降雨機率 (%)', '資料更新時間'
+    ]);
+
+    // 日期處理
+    let updateTime;
+    try {
+      const dateString = data.records.datasetDescription?.update 
+                      || data.records.datasetDescription?.updateTime;
+      updateTime = dateString ? new Date(dateString) : new Date();
+      if (isNaN(updateTime.getTime())) {
+        updateTime = new Date();
+      }
+    } catch (e) {
+      updateTime = new Date();
+    }
+
+    locations.forEach(location => {
+      const locationName = location.locationName;
+      const weatherElements = location.weatherElement;
+
+      const wxElement = weatherElements.find(el => el.elementName === 'Wx');
+      const minTElement = weatherElements.find(el => el.elementName === 'MinT');
+      const maxTElement = weatherElements.find(el => el.elementName === 'MaxT');
+      const ciElement = weatherElements.find(el => el.elementName === 'CI');
+      const popElement = weatherElements.find(el => el.elementName === 'PoP');
+
+      const wx = wxElement ? wxElement.time[0].parameter.parameterName : 'N/A';
+      const minT = minTElement ? minTElement.time[0].parameter.parameterName : 'N/A';
+      const maxT = maxTElement ? maxTElement.time[0].parameter.parameterName : 'N/A';
+      const ci = ciElement ? ciElement.time[0].parameter.parameterName : 'N/A';
+      const pop = popElement ? popElement.time[0].parameter.parameterName : 'N/A';
+
+      outputData.push([locationName, wx, minT, maxT, ci, pop, updateTime]);
+    });
+
+    // 8. 寫入試算表
+    sheet.clear();
+    sheet.getRange(1, 1, outputData.length, outputData[0].length).setValues(outputData);
+
+    // 9. 美化試算表
+    const headerRange = sheet.getRange(1, 1, 1, outputData[0].length);
+    headerRange.setBackground('#4285F4')
+               .setFontColor('#FFFFFF')
+               .setFontWeight('bold')
+               .setHorizontalAlignment('center');
+
+    sheet.autoResizeColumns(1, outputData[0].length);
+    sheet.setFrozenRows(1);
+    
+    if (outputData.length > 1) {
+      const dateColumn = sheet.getRange(2, 7, outputData.length - 1, 1);
+      dateColumn.setNumberFormat('yyyy/mm/dd hh:mm:ss');
+    }
+
+    // ✅ 繫結式腳本可以使用 UI
+    ui.alert(
+      '✅ 天氣資料已成功更新！',
+      `共取得 ${locations.length} 個縣市的天氣預報\n資料更新時間: ${formatDate(updateTime)}`,
+      ui.ButtonSet.OK
+    );
+
+    Logger.log(`✅ 成功寫入 ${locations.length} 筆資料`);
+
+  } catch (e) {
+    // ✅ 繫結式腳本可以使用 UI 顯示錯誤
+    ui.alert(
+      '❌ 執行失敗',
+      `錯誤訊息: ${e.message}\n\n請查看執行記錄以了解詳情。`,
+      ui.ButtonSet.OK
+    );
+    Logger.log("❌ 錯誤: " + e.toString());
+    Logger.log("堆疊: " + e.stack);
+  }
+}
+
+/**
+ * 清除天氣資料
+ */
+function clearWeatherData() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("天氣預報");
+  
+  if (!sheet) {
+    ui.alert('⚠️ 找不到「天氣預報」工作表');
+    return;
+  }
+  
+  const response = ui.alert(
+    '確認清除',
+    '確定要清除「天氣預報」工作表的所有資料嗎？',
+    ui.ButtonSet.YES_NO
+  );
+  
+  if (response == ui.Button.YES) {
+    sheet.clear();
+    ui.alert('✅ 資料已清除');
+    Logger.log('✅ 天氣預報資料已清除');
+  }
+}
+
+/**
+ * 除錯函式
+ */
+function debugAPIResponse() {
+  const ui = SpreadsheetApp.getUi();
+  const apiKey = getCWAApiKey();
+  
+  if (!apiKey) {
+    ui.alert('⚠️ 請先設定 API Key');
+    return;
+  }
+
+  const baseUrl = 'https://opendata.cwa.gov.tw/api/v1/rest/datastore/F-C0032-001';
+  const url = `${baseUrl}?Authorization=${apiKey}&format=JSON`;
+
+  try {
+    const response = UrlFetchApp.fetch(url);
+    const data = JSON.parse(response.getContentText());
+    
+    Logger.log('=== API 回應結構 ===');
+    Logger.log('success: ' + data.success);
+    Logger.log('records 存在: ' + (data.records ? 'Yes' : 'No'));
+    
+    if (data.records && data.records.datasetDescription) {
+      Logger.log('\n=== 日期欄位資訊 ===');
+      Logger.log(JSON.stringify(data.records.datasetDescription, null, 2));
+    }
+    
+    ui.alert('✅ 除錯完成', '請查看「執行記錄」以了解詳情', ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert('❌ 除錯失敗', e.message, ui.ButtonSet.OK);
+    Logger.log('❌ 錯誤: ' + e.toString());
+  }
+}
+
+/**
+ * 顯示使用說明
+ */
+function showHelp() {
+  const ui = SpreadsheetApp.getUi();
+  const helpText = 
+    '📖 繫結式腳本使用說明\n\n' +
+    '🎯 特色：\n' +
+    '  • 直接依附在此試算表上\n' +
+    '  • 可使用自訂選單\n' +
+    '  • 適合單一文件的自動化\n\n' +
+    '📝 使用步驟：\n' +
+    '1️⃣ 點擊「⚙️ 設定 API Key」\n' +
+    '2️⃣ 點擊「📥 更新天氣資料」\n' +
+    '3️⃣ 查看「天氣預報」工作表\n\n' +
+    '🔗 取得 API Key：\n' +
+    '   https://opendata.cwa.gov.tw\n\n' +
+    '❓ 問題排解：\n' +
+    '   查看「擴充功能 → Apps Script → 執行記錄」';
+  
+  ui.alert('🌤️ 天氣工具使用說明', helpText, ui.ButtonSet.OK);
+}
+
+/**
+ * 建立定時觸發器
+ */
+function createHourlyTrigger() {
+  // 刪除現有觸發器
+  const triggers = ScriptApp.getProjectTriggers();
+  triggers.forEach(trigger => {
+    if (trigger.getHandlerFunction() === 'fetchWeatherDataBound') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  });
+  
+  // 建立新觸發器
+  ScriptApp.newTrigger('fetchWeatherDataBound')
+    .timeBased()
+    .everyHours(1)
+    .create();
+  
+  const ui = SpreadsheetApp.getUi();
+  ui.alert('✅ 已設定每小時自動更新');
+  Logger.log('✅ 已設定定時觸發器');
+}
+```
+
+#### 步驟 3：執行與測試
+1. 重新整理試算表，會看到「🌤️ 天氣工具」選單
+2. 點擊「⚙️ 設定 API Key」輸入您的 API Key
+3. 點擊「📥 更新天氣資料」
+4. 查看「天氣預報」工作表

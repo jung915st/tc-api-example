@@ -1,0 +1,135 @@
+Lab 2: 校內使用者帳號管理
+* **目標：** 讀取特定機構單位 (OU) 的所有使用者清單，並將其 Email、全名、最後登入時間等資訊自動產生在 Google Sheet 報表中。
+
+* **前置作業：**
+
+  1.  確認你具備「超級管理員」身分。
+  2.  開啟一個 Google 試算表，並建立一個 GAS **繫結式腳本**。
+  3.  依照上列步驟，啟用 `Admin SDK API` 進階服務。
+  4.  (可選) 建立一個名為 "使用者清單" 的工作表分頁。
+
+* **如何啟用 Admin SDK API (Step-by-Step)**
+
+  `Admin SDK API` 是一個進階服務，需要手動在 GAS 編輯器中啟用後才能在程式碼中使用 `AdminDirectory` 物件。
+
+  1.  **開啟服務面板**：
+      在 Apps Script 編輯器的左側選單中，找到「服務」(Services) 選項，並點擊旁邊的「+」號按鈕。
+
+      ![Add Service](https://i.imgur.com/SDEs9bN.png)
+
+  2.  **選擇 API**：
+      在彈出的對話框中，從列表中找到 `Admin SDK API`。
+
+      ![Select Admin SDK API](https://i.imgur.com/jGv3jOA.png)
+
+  3.  **新增服務**：
+      點擊「新增」(Add) 按鈕。
+
+  4.  **完成**：
+      完成後，您會在左側的「服務」清單底下看到 `AdminDirectory`。這表示您現在可以在程式碼中使用 `AdminDirectory.Users.list()` 等方法了。
+
+      ![Service Enabled](https://i.imgur.com/1fJ7O9E.png)
+
+* **範例程式碼：**
+
+  ```javascript
+  /**
+   * @OnlyCurrentDoc
+   * * Lab 2: 匯出特定 OU 的使用者清單
+   * * 執行此函數前，請務必：
+   * 1. 確保您是 Google Workspace 的「超級管理員」。
+   * 2. 在 GAS 編輯器中啟用「服務」 > "Admin SDK API"。
+   * 3. 首次執行時，會彈出授權視窗，請務必同意。
+   */
+  function listUsersInOU() {
+    // --- 1. 使用者設定 ---
+    // 請將 '/學生/一年級/甲班' 替換成您想查詢的 OU 完整路徑
+    const TARGET_OU_PATH = '/學生'; 
+    // ---------------------
+
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName("使用者清單") || SpreadsheetApp.getActiveSpreadsheet().insertSheet("使用者清單");
+    sheet.clear();
+
+    // 輸出的標題列
+    const headers = ['全名', 'Email', '機構單位', '最後登入時間', '帳號狀態'];
+    const outputData = [headers];
+
+    let pageToken = null;
+    let pageNumber = 1;
+
+    Logger.log(`開始查詢 OU: ${TARGET_OU_PATH} ...`);
+
+    try {
+      // 2. 處理 API 分頁 (Pagination)
+      // Admin SDK API 一次最多只會回傳 500 筆資料，
+      // 我們必須使用 do...while 迴圈和 pageToken 來取得所有頁面的資料。
+      do {
+        const optionalArgs = {
+          customer: 'my_customer',        // 'my_customer' 是指您自己的網域
+          query: `orgUnitPath='${TARGET_OU_PATH}'`, // 查詢語法
+          maxResults: 500,                // 一次取得的最大數量
+          pageToken: pageToken,
+          orderBy: 'email',               // 排序方式
+          viewType: 'admin_view'          // 必須是 admin_view 才能看到所有欄位
+        };
+
+        // 3. 呼叫 Admin SDK API
+        const response = AdminDirectory.Users.list(optionalArgs);
+        const users = response.users;
+
+        if (users && users.length > 0) {
+          Logger.log(`正在處理第 ${pageNumber} 頁，共 ${users.length} 筆使用者資料...`);
+
+          // 4. 整理回傳的資料
+          users.forEach(user => {
+            // 處理最後登入時間，如果是新帳號可能沒有這個欄位
+            let lastLoginTime = user.lastLoginTime ? new Date(user.lastLoginTime) : '從未登入';
+            let status = user.suspended ? '已停權' : '啟用中';
+
+            outputData.push([
+              user.name.fullName,
+              user.primaryEmail,
+              user.orgUnitPath,
+              lastLoginTime,
+              status
+            ]);
+          });
+        } else {
+          Logger.log('在此 OU 中找不到任何使用者。');
+          break;
+        }
+
+        // 取得下一頁的 token，如果沒有下一頁，pageToken 會是 null
+        pageToken = response.nextPageToken;
+        pageNumber++;
+
+      } while (pageToken);
+
+      // 5. 將所有資料一次性寫入 Google Sheet
+      if (outputData.length > 1) { // 確保有資料 (大於 1 是因為標題列)
+        sheet.getRange(1, 1, outputData.length, headers.length).setValues(outputData);
+        sheet.autoResizeColumns(1, headers.length);
+        Logger.log(`查詢完成！總共匯出 ${outputData.length - 1} 筆使用者資料。`);
+        SpreadsheetApp.getUi().alert(`查詢完成！總共匯出 ${outputData.length - 1} 筆使用者資料。`);
+      } else {
+        sheet.getRange(1, 1).setValue('在該 OU 中找不到任何使用者。');
+        Logger.log('在該 OU 中找不到任何使用者。');
+      }
+
+    } catch (e) {
+      // 6. 錯誤處理
+      Logger.log('執行失敗: ' + e.message);
+      Logger.log('詳細錯誤: ' + e.stack);
+      SpreadsheetApp.getUi().alert('執行失敗！請檢查日誌。\n錯誤訊息：' + e.message + '\n\n(常見原因：1. 非管理員 2. OU 路徑錯誤 3. API 未啟用)');
+    }
+  }
+
+  /**
+   * (可選) 增加一個選單，方便執行
+   */
+  function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('管理員工具')
+    .addItem('匯出 OU 使用者清單', 'listUsersInOU')
+    .addToUi();
+}
