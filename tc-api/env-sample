@@ -1,0 +1,9 @@
+PORT=3001
+
+# OAuth2 Provider（校務系統）
+OAUTH_TOKEN_URL=https://api.cloudschool.tw/oauth?authorize
+OAUTH_CLIENT_ID=xxxxx
+OAUTH_CLIENT_SECRET=xxxxx
+
+# 校務 API
+SCHOOL_API_URL=https://api.cloudschool.tw
