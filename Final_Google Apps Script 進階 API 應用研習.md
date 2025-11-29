@@ -925,88 +925,357 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
 ## **Part 6: 【專案實戰】LINE Bot 結合 AI 實現 OCR 文字辨識**
 
 - **專案目標：** 建立一個能接收使用者傳送的圖片、辨識圖片中的文字，並將文字回傳給使用者的 LINE 機器人。
-- **核心架構：** LINE (傳送圖片) \-\> Make.com (自動化流程) \-\> imgbb (圖片暫存) \-\> Mistral AI (OCR辨識) \-\> LINE (回傳文字)
+- **核心架構：** LINE (傳送圖片) → Make.com (自動化流程) → imgbb (圖片暫存) → Mistral AI Pixtral (OCR辨識) → LINE (回傳文字)
+
+- **前置準備：取得必要的 API 金鑰**
+  1. **imgbb API Key：**
+     - 前往 [https://api.imgbb.com/](https://api.imgbb.com/)
+     - 註冊帳號後，在首頁即可看到並複製您的 API Key
+  2. **Mistral AI API Key：**
+     - 前往 [https://console.mistral.ai/](https://console.mistral.ai/)
+     - 註冊帳號後，前往 API Keys 頁面建立新的 API Key
+     - **【重要】** 免費方案有使用限制，請確認您的帳戶狀態
+
 - **使用工具與 API 概念：**
   - **LINE Messaging API:**
-    - **概念：** 使用 Watch Events 模組接收所有訊息。當訊息類型為 image 時，我們會取得一個 Message ID。
-    - **文件：** [Messaging API reference \- Message objects](https://www.google.com/search?q=https://developers.line.biz/en/reference/messaging-api/%23message-objects)
+    - **概念：** 使用 `Watch Events` 模組接收所有訊息。當訊息類型為 `image` 時，我們會取得一個 Message ID，再用此 ID 去下載實際的圖片內容。
+    - **Get Content 端點：** `GET https://api-data.line.me/v2/bot/message/{messageId}/content`
+    - **文件：** [LINE Messaging API - Get content](https://developers.line.biz/en/reference/messaging-api/#get-content)
   - **imgbb API:**
-    - **概念：** LINE 傳來的圖片內容有存取時效性，我們無法直接將臨時 URL 丟給 Mistral。因此，我們需要先將圖片上傳到一個公開的圖片託管服務 (如 imgbb)，以取得一個永久的公開 URL。
-    - **文件：** [imgbb API v1](https://api.imgbb.com/)
-  - **Mistral AI (Multimodal) API:**
-    - **概念：** 我們將使用 Mistral 的多模態模型 (如 mistral-large-latest)。透過 chat/completions 端點，我們可以傳送一段文字提示 (Prompt) 和一個圖片 URL，AI 將會「看懂」圖片並依照我們的指示（例如 "Extract all text"）回傳辨識出的文字。
-    - **文件：** [Mistral AI \- Multimodal Guide](https://www.google.com/search?q=https://docs.mistral.ai/guides/multimodal/)
+    - **概念：** LINE 傳來的圖片內容有存取時效性，我們無法直接將臨時連結丟給 AI。因此，我們需要先將圖片上傳到一個公開的圖片託管服務 (如 imgbb)，以取得一個永久的公開 URL。
+    - **上傳端點：** `POST https://api.imgbb.com/1/upload`
+    - **參數說明：**
+      - `key` (必填): 您的 API 金鑰
+      - `image` (必填): 圖片資料，可以是 Base64 編碼字串、圖片 URL、或二進位檔案
+      - `expiration` (選填): 圖片保留秒數 (60-15552000)，不填則永久保存
+    - **回應結構：** `data.url` 或 `data.display_url` 為圖片的公開網址
+    - **文件：** [imgbb API Documentation](https://api.imgbb.com/)
+  - **Mistral AI Pixtral (Vision/Multimodal) API:**
+    - **【重要修正】** `mistral-large-latest` **不支援**圖片辨識！必須使用 **Pixtral** 系列的視覺模型：
+      - `pixtral-12b-2409` - 基礎視覺模型 (建議使用)
+      - `pixtral-large-latest` - 進階視覺模型 (效果更好，但消耗更多 tokens)
+    - **API 端點：** `POST https://api.mistral.ai/v1/chat/completions`
+    - **文件：** [Mistral AI - Vision Guide](https://docs.mistral.ai/capabilities/vision/)
+
 - **Lab 5: 建立 OCR 機器人 (Make.com 流程詳解)**
-  - 情境 (Scenario) 總覽：  
-    LINE (Watch Events) \-\> Router \-\> (分支1: 圖片訊息) \-\> LINE (Get Message Content) \-\> HTTP (Upload to imgbb) \-\> HTTP (Call Mistral OCR) \-\> LINE (Send a Reply Message)
+
+  - **情境 (Scenario) 總覽流程圖：**
+    ```
+    [1] LINE: Watch Events
+           ↓
+    [2] Router (流程分支)
+           ↓ (Filter: message.type = "image")
+    [3] LINE: Download a Message Content
+           ↓
+    [4] HTTP: Make a request (上傳至 imgbb)
+           ↓
+    [5] HTTP: Make a request (呼叫 Mistral Pixtral)
+           ↓
+    [6] LINE: Send a Reply Message
+    ```
+
   - **詳細模組設定步驟：**
-    1. **觸發器：LINE \> Watch Events**
-       - **Connection:** 選擇你 Lab 3 建立的 LINE 連結。
-       - **Webhook:** 保持不變。
-    2. **流程控制：Router**
-       - 從 LINE 模組後方拉出 Router。
-       - 拉出第一條路徑，並在路徑上設定過濾器 (Filter)。
-       - **Filter 設定 (只處理圖片)：**
-         - **Label:** 判斷為圖片訊息
-         - **Condition:** {{1.events\[\].message.type}} (來自 LINE 的訊息類型)
-         - **Text operator:** Equals to (case insensitive)
-         - **Value:** image
-    3. **模組A：LINE \> Get Message Content**
-       - **Connection:** 選擇同一個 LINE 連結。
-       - **Message ID:** 從 Watch Events 模組 ( {{1.events\[\].message.id}} ) 拖曳 Message ID 變數過來。
-       - **說明：** 此模組會根據 Message ID 去 LINE 伺服器抓取圖片的原始二進位 (Binary) 資料。
-    4. **模組B：HTTP \> Make a request (上傳至 imgbb)**
-       - **URL:** https://api.imgbb.com/1/upload?key=YOUR\_IMGBB\_API\_KEY (將 YOUR_IMGBB_API_KEY 換成你的金鑰)。
-       - **Method:** POST
-       - **Body type:** Multipart/form-data
-       - **Fields:**
-         - 點擊 Add item。
-         - **Key:** image
-         - **Value:** {{Module\_A.data}} ( {{3.data}}，**注意：** 這裡要選擇 Get Message Content 模組回傳的 data 變數，它代表圖片的二進位資料)。
-       - **Parse response:** Yes (勾選此項，Make.com 會自動將 imgbb 回傳的 JSON 轉為物件)。
-       - **說明：** 此模組會將圖片資料 POST 到 imgbb API。imgbb 會回傳一個 JSON，裡面包含 data.url，這就是我們需要的公開圖片網址。
-    5. **模組C：HTTP \> Make a request (呼叫 Mistral AI)**
-       - **URL:** https://api.mistral.ai/v1/chat/completions
-       - **Method:** POST
-       - **Headers:**
-         - Content-Type: application/json
-         - Authorization: Bearer YOUR_MISTRAL_API_KEY (將 YOUR_MISTRAL_API_KEY 換成你的金鑰)。
-       - **Body type:** Raw
-       - **Content type:** JSON (application/json)
-       - **Request content (JSON Body):**  
-         {  
-          "model": "mistral-large-latest",  
-          "messages": \[  
-          {  
-          "role": "user",  
-          "content": \[  
-          {  
-          "type": "text",  
-          "text": "請辨識這張圖片中的所有文字，並僅回傳文字內容，不要包含任何額外的說明或開場白。"  
-          },  
-          {  
-          "type": "image_url",  
-          "image_url": {  
-          "url": "{{Module\_B.data.data.url}}"  
-          }  
-          }  
-          \]  
-          }  
-          \]  
-         }
-         - **注意：** {{Module\_B.data.data.url}} ( {{4.data.data.url}} ) 是從上一步 imgbb模組的回應中取得的圖片網址。
 
-       - **Parse response:** Yes (勾選)。
-       - **說明：** 我們發送一個 JSON 物件給 Mistral API，包含模型名稱、提示詞 (prompt)，以及圖片網址。AI 會回傳一個 JSON，辨識結果在 choices\[0\].message.content 中。
+    ---
+    ### **步驟 1：觸發器 - LINE > Watch Events**
+    
+    這是整個流程的起點，用來監聽 LINE 用戶傳送的所有訊息。
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Connection** | 選擇您在 Lab 3 建立的 LINE 連結 |
+    | **Webhook** | 使用現有的 Webhook (與 Lab 3/4 相同) |
+    
+    **輸出變數 (可在後續模組使用)：**
+    - `{{1.events[].message.type}}` - 訊息類型 (text, image, video...)
+    - `{{1.events[].message.id}}` - 訊息 ID (用來下載圖片)
+    - `{{1.events[].replyToken}}` - 回覆用的 Token
+    - `{{1.events[].source.userId}}` - 發送者的 User ID
 
-    6. **模組D：LINE \> Send a Reply Message**
-       - **Connection:** 選擇同一個 LINE 連結。
-       - **Reply Token:** {{1.events\[\].replyToken}} (來自 Watch Events 觸發器)。
-       - **Text:** {{Module\_C.data.choices\[0\].message.content}} ( {{5.data.choices\[0\].message.content}} )
-       - **說明：** 將 Mistral API 回傳的辨識結果文字，透過 LINE 回傳給使用者。
-    7. **錯誤處理 (進階建議)：**
-       - 可以在 Router 的 Else 路徑上，加入 LINE \> Send a Reply Message 模組，回覆「請傳送圖片格式的檔案」。
-       - 可以在模組B、C之後加入錯誤處理路由 (Error Handlers)，若 API 呼叫失敗，也能回傳友善的錯誤訊息給使用者。
+    ---
+    ### **步驟 2：流程控制 - Router**
+    
+    從 LINE Watch Events 模組後方拉出 Router 模組，用來根據訊息類型分流處理。
+    
+    **設定過濾器 (Filter) - 只處理圖片訊息：**
+    
+    1. 點擊 Router 與下一個模組之間的連線 (虛線)
+    2. 點擊「Set up a filter」
+    3. 填入以下設定：
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Label** | `判斷為圖片訊息` |
+    | **Condition 欄位 1** | `{{1.events[].message.type}}` |
+    | **Operator** | `Text operators: Equal to (case insensitive)` |
+    | **Condition 欄位 2** | `image` |
+    
+    ---
+    ### **步驟 3：模組 A - LINE > Download a Message Content**
+    
+    **【重要】** Make.com 的 LINE 模組名稱是 `Download a Message Content`，不是 "Get Message Content"。
+    
+    此模組會根據 Message ID，向 LINE 伺服器請求下載圖片的原始二進位資料。
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Connection** | 選擇同一個 LINE 連結 |
+    | **Message ID** | `{{1.events[].message.id}}` (從面板拖曳選取) |
+    
+    **輸出變數：**
+    - `{{3.data}}` - 圖片的二進位 (Binary) 資料
+    - `{{3.fileName}}` - 檔案名稱 (可能為空)
+
+    ---
+    ### **步驟 4：模組 B - HTTP > Make a request (上傳至 imgbb)**
+    
+    將圖片上傳到 imgbb 圖床服務，取得一個永久的公開 URL。
+    
+    **【重要】imgbb API 接受 Base64 編碼的圖片資料。**
+    
+    在 Make.com 中，使用 `toString()` 函數將二進位資料轉換為 Base64：
+    - 語法：`{{toString(3.data; "base64")}}`
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **URL** | `https://api.imgbb.com/1/upload` |
+    | **Method** | `POST` |
+    | **Body type** | `Application/x-www-form-urlencoded` |
+    
+    **Fields (點擊 Add item 新增欄位)：**
+    
+    | Key | Value |
+    |-----|-------|
+    | `key` | `您的_IMGBB_API_KEY` (直接貼上您的金鑰) |
+    | `image` | `{{toString(3.data; "base64")}}` |
+    
+    **其他設定：**
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Parse response** | `Yes` ✅ (勾選) |
+    
+    **imgbb API 回應範例：**
+    ```json
+    {
+      "data": {
+        "id": "abc123",
+        "url": "https://i.ibb.co/xxxxx/image.jpg",
+        "display_url": "https://i.ibb.co/xxxxx/image.jpg",
+        "delete_url": "https://ibb.co/xxxxx/xxxxxxx"
+      },
+      "success": true,
+      "status": 200
+    }
+    ```
+    
+    **輸出變數 (用於下一步)：**
+    - `{{4.data.url}}` - 圖片的公開 URL ⭐
+
+    ---
+    ### **步驟 5：模組 C - HTTP > Make a request (呼叫 Mistral AI Pixtral)**
+    
+    **【重要修正】** 必須使用 Pixtral 視覺模型，不能用 `mistral-large-latest`！
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **URL** | `https://api.mistral.ai/v1/chat/completions` |
+    | **Method** | `POST` |
+    
+    **Headers (點擊 Add item 新增)：**
+    
+    | Name | Value |
+    |------|-------|
+    | `Content-Type` | `application/json` |
+    | `Authorization` | `Bearer 您的_MISTRAL_API_KEY` |
+    
+    **Body 設定：**
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Body type** | `Raw` |
+    | **Content type** | `JSON (application/json)` |
+    
+    **Request content (JSON Body)：**
+    
+    ```json
+    {
+      "model": "pixtral-12b-2409",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "請辨識這張圖片中的所有文字，並僅回傳文字內容，不要包含任何額外的說明或開場白。如果圖片中沒有文字，請回覆「圖片中未偵測到文字」。"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "{{4.data.url}}"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 1024
+    }
+    ```
+    
+    **【變數說明】**
+    - `{{4.data.url}}` 是從上一步 imgbb 模組取得的圖片公開網址
+    - 在 Make.com 編輯 JSON 時，可以直接在 `"url": "` 後方點擊，從變數面板選取
+    
+    **其他設定：**
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Parse response** | `Yes` ✅ (勾選) |
+    
+    **Mistral API 回應範例：**
+    ```json
+    {
+      "id": "cmpl-xxxxx",
+      "object": "chat.completion",
+      "choices": [
+        {
+          "index": 0,
+          "message": {
+            "role": "assistant",
+            "content": "這是圖片中辨識出的文字內容..."
+          },
+          "finish_reason": "stop"
+        }
+      ],
+      "usage": {
+        "prompt_tokens": 100,
+        "completion_tokens": 50,
+        "total_tokens": 150
+      }
+    }
+    ```
+    
+    **輸出變數 (用於下一步)：**
+    - `{{5.data.choices[1].message.content}}` - OCR 辨識結果文字 ⭐
+    - **【注意】** Make.com 的陣列索引是 1-based，所以 `choices[0]` 要寫成 `choices[1]`
+
+    ---
+    ### **步驟 6：模組 D - LINE > Send a Reply Message**
+    
+    將 OCR 辨識結果回傳給使用者。
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Connection** | 選擇同一個 LINE 連結 |
+    | **Reply Token** | `{{1.events[].replyToken}}` |
+    
+    **Messages (點擊 Add item)：**
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Type** | `Text` |
+    | **Text** | `{{5.data.choices[1].message.content}}` |
+    
+    **【美化輸出 (選用)】** 如果想加上前綴說明：
+    ```
+    📝 OCR 辨識結果：
+    
+    {{5.data.choices[1].message.content}}
+    ```
+
+    ---
+    ### **步驟 7：錯誤處理與 Fallback 路徑 (進階建議)**
+    
+    **7-1. 非圖片訊息的回覆 (Router Else 路徑)**
+    
+    1. 從 Router 拉出第二條路徑
+    2. 點擊該路徑的連線，選擇「Set as fallback route」(設為備用路由)
+    3. 在這條路徑上新增 `LINE > Send a Reply Message` 模組：
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Reply Token** | `{{1.events[].replyToken}}` |
+    | **Text** | `請傳送圖片檔案，我會幫您辨識其中的文字！📷` |
+    
+    **7-2. API 錯誤處理 (Error Handler)**
+    
+    1. 在模組 C (Mistral API) 上按右鍵，選擇「Add error handler」
+    2. 新增 `LINE > Send a Reply Message` 模組：
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Reply Token** | `{{1.events[].replyToken}}` |
+    | **Text** | `抱歉，圖片辨識過程發生錯誤，請稍後再試。🙏` |
+    
+    **7-3. 圖片過大處理 (選用)**
+    
+    在 Router 之後、Download 之前，可加入 Filter 檢查檔案大小：
+    - LINE 圖片訊息包含 `contentProvider.type`，若為 `line`，檔案大小有限制
+
+    ---
+    ### **完整流程檢查清單**
+    
+    在啟用 Scenario 之前，請確認：
+    
+    - [ ] LINE Connection 已正確設定且授權有效
+    - [ ] imgbb API Key 已正確填入
+    - [ ] Mistral API Key 已正確填入
+    - [ ] 模型名稱使用 `pixtral-12b-2409` (不是 mistral-large-latest)
+    - [ ] 所有變數路徑正確 (特別注意 Make.com 陣列是 1-based)
+    - [ ] Parse response 都已勾選
+    - [ ] 已設定 Fallback 路徑處理非圖片訊息
+
+    ---
+    ### **測試流程**
+    
+    1. 點擊右下角的「Run once」啟動監聽
+    2. 用手機 LINE 傳送一張包含文字的圖片給你的機器人
+    3. 觀察 Make.com 的執行狀態，確認每個模組都顯示綠色勾勾
+    4. 檢查 LINE 是否收到 OCR 辨識結果
+    
+    **常見問題排除：**
+    
+    | 問題 | 可能原因 | 解決方法 |
+    |------|---------|---------|
+    | imgbb 上傳失敗 | API Key 錯誤或過期 | 重新確認 API Key |
+    | Mistral 回傳錯誤 | 使用了不支援視覺的模型 | 改用 `pixtral-12b-2409` |
+    | LINE 沒收到回覆 | Reply Token 過期 (只有 30 秒效期) | 確保流程在 30 秒內完成 |
+    | 變數取不到值 | 陣列索引錯誤 | Make.com 用 1-based，不是 0-based |
+
+    ---
+    ### **替代方案：使用 OpenAI GPT-4 Vision**
+    
+    如果 Mistral 不穩定，可以改用 OpenAI 的 GPT-4 Vision：
+    
+    **URL:** `https://api.openai.com/v1/chat/completions`
+    
+    **Headers:**
+    - `Authorization`: `Bearer 您的_OPENAI_API_KEY`
+    
+    **Body:**
+    ```json
+    {
+      "model": "gpt-4o",
+      "messages": [
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "請辨識這張圖片中的所有文字，僅回傳文字內容。"
+            },
+            {
+              "type": "image_url",
+              "image_url": {
+                "url": "{{4.data.url}}"
+              }
+            }
+          ]
+        }
+      ],
+      "max_tokens": 1024
+    }
+    ```
 
 ##
 
