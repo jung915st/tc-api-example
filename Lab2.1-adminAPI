@@ -15,12 +15,10 @@ Lab 2: 校內使用者帳號管理
   1.  **開啟服務面板**：
       在 Apps Script 編輯器的左側選單中，找到「服務」(Services) 選項，並點擊旁邊的「+」號按鈕。
 
-      ![Add Service](https://i.imgur.com/SDEs9bN.png)
 
   2.  **選擇 API**：
       在彈出的對話框中，從列表中找到 `Admin SDK API`。
 
-      ![Select Admin SDK API](https://i.imgur.com/jGv3jOA.png)
 
   3.  **新增服務**：
       點擊「新增」(Add) 按鈕。
@@ -28,11 +26,9 @@ Lab 2: 校內使用者帳號管理
   4.  **完成**：
       完成後，您會在左側的「服務」清單底下看到 `AdminDirectory`。這表示您現在可以在程式碼中使用 `AdminDirectory.Users.list()` 等方法了。
 
-      ![Service Enabled](https://i.imgur.com/1fJ7O9E.png)
 
 * **範例程式碼：**
 
-  ```javascript
   /**
    * @OnlyCurrentDoc
    * * Lab 2: 匯出特定 OU 的使用者清單

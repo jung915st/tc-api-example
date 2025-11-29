@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>點名 - 班級管理系統</title>
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <?!= include('Common_v1.0.0'); ?>
+  
+  <style>
+    .class-selector {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 15px;
+      margin-bottom: 20px;
+    }
+    
+    .class-card {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      padding: 20px;
+      border-radius: 12px;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      text-align: center;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+    }
+    
+    .class-card:hover {
+      transform: translateY(-5px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.12);
+    }
+    
+    .class-card.selected {
+      background: linear-gradient(135deg, #4caf50 0%, #45a049 100%);
+      box-shadow: 0 8px 24px rgba(76, 175, 80, 0.3);
+    }
+    
+    .class-card-title {
+      font-size: 24px;
+      font-weight: 700;
+      margin-bottom: 8px;
+    }
+    
+    .class-card-info {
+      font-size: 13px;
+      opacity: 0.9;
+    }
+    
+    .attendance-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+      gap: 15px;
+      margin-top: 20px;
+    }
+    
+    .student-card {
+      background: white;
+      border: 2px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 15px;
+      transition: all 0.3s ease;
+    }
+    
+    .student-card.has-record {
+      border-color: #4caf50;
+      background: #f1f8f4;
+    }
+    
+    .student-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 10px;
+      border-bottom: 2px solid #f0f0f0;
+    }
+    
+    .student-name {
+      font-size: 16px;
+      font-weight: 600;
+      color: #333;
+    }
+    
+    .student-seat {
+      background: #667eea;
+      color: white;
+      padding: 4px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+    }
+    
+    .status-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    
+    .status-btn {
+      padding: 8px 12px;
+      border: 2px solid #e0e0e0;
+      border-radius: 6px;
+      background: white;
+      cursor: pointer;
+      font-size: 13px;
+      transition: all 0.2s ease;
+      text-align: center;
+    }
+    
+    .status-btn:hover {
+      border-color: #667eea;
+      background: #f8f9ff;
+    }
+    
+    .status-btn.active {
+      border-color: #667eea;
+      background: #667eea;
+      color: white;
+      font-weight: 600;
+    }
+    
+    .status-btn.present.active { background: #4caf50; border-color: #4caf50; }
+    .status-btn.sick.active { background: #ff9800; border-color: #ff9800; }
+    .status-btn.personal.active { background: #2196f3; border-color: #2196f3; }
+    .status-btn.absent.active { background: #f44336; border-color: #f44336; }
+    .status-btn.late.active { background: #9c27b0; border-color: #9c27b0; }
+    
+    .student-notes {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #e0e0e0;
+      border-radius: 6px;
+      font-size: 12px;
+      font-family: inherit;
+      resize: none;
+      height: 50px;
+    }
+    
+    .student-notes:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    .filter-section {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 15px;
+    }
+    
+    .grade-selector {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    
+    .grade-btn {
+      padding: 8px 20px;
+      border: 2px solid #667eea;
+      border-radius: 20px;
+      background: white;
+      color: #667eea;
+      cursor: pointer;
+      font-weight: 500;
+      transition: all 0.2s ease;
+    }
+    
+    .grade-btn:hover {
+      background: #f8f9ff;
+    }
+    
+    .grade-btn.active {
+      background: #667eea;
+      color: white;
+    }
+    
+    @media (max-width: 768px) {
+      .attendance-grid {
+        grid-template-columns: 1fr;
+      }
+      
+      .status-buttons {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- 導航列 -->
+  <nav class="navbar">
+    <div class="navbar-container">
+      <a href="?page=dashboard" class="navbar-brand">
+        <i class="fas fa-school"></i>
+        <span>班級管理系統</span>
+      </a>
+      
+      <button class="navbar-toggle" onclick="toggleMobileMenu()">
+        <i class="fas fa-bars"></i>
+      </button>
+      
+      <ul class="navbar-menu">
+        <li><a href="?page=dashboard"><i class="fas fa-home"></i> 儀表板</a></li>
+        <li><a href="?page=attendance" class="active"><i class="fas fa-check-square"></i> 點名</a></li>
+        <li><a href="?page=homework"><i class="fas fa-book"></i> 作業</a></li>
+        <li><a href="?page=leave"><i class="fas fa-file-alt"></i> 請假</a></li>
+        <li><a href="?page=students"><i class="fas fa-users"></i> 學生</a></li>
+        <li><a href="?page=sync"><i class="fas fa-sync"></i> 同步</a></li>
+      </ul>
+      
+      <div class="navbar-user">
+        <i class="fas fa-user-circle"></i>
+        <span><?= userEmail ?></span>
+      </div>
+    </div>
+  </nav>
+  
+  <!-- 主要內容 -->
+  <div class="container">
+    <!-- 頁面標題 -->
+    <div class="card">
+      <div class="card-header">
+        <div>
+          <h1 class="card-title">
+            <i class="fas fa-check-square"></i>
+            班級點名系統
+          </h1>
+          <p class="text-muted" style="margin-top: 5px; font-size: 14px;">
+            <i class="fas fa-calendar"></i>
+            <span id="todayDate"></span>
+          </p>
+        </div>
+        <button class="btn btn-primary" onclick="submitAttendance()" id="submitBtn" style="display: none;">
+          <i class="fas fa-save"></i> 儲存點名記錄
+        </button>
+      </div>
+    </div>
+    
+    <!-- 年級選擇器 -->
+    <div class="card" id="gradeSection">
+      <div class="card-header">
+        <h2 class="card-title">
+          <i class="fas fa-layer-group"></i>
+          選擇年級
+        </h2>
+      </div>
+      <div class="card-body">
+        <div class="filter-section">
+          <span style="font-weight: 600;">年級篩選：</span>
+          <div class="grade-selector" id="gradeSelector">
+            <div class="loading">
+              <div class="spinner"></div>
+              <p>載入年級資料中...</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 班級選擇器 -->
+    <div class="card" id="classSection" style="display: none;">
+      <div class="card-header">
+        <h2 class="card-title">
+          <i class="fas fa-users"></i>
+          選擇班級
+        </h2>
+        <button class="btn btn-secondary btn-sm" onclick="resetSelection()">
+          <i class="fas fa-redo"></i> 重新選擇
+        </button>
+      </div>
+      <div class="card-body">
+        <div class="class-selector" id="classSelector">
+          <!-- Classes will be loaded here -->
+        </div>
+      </div>
+    </div>
+    
+    <!-- 快速操作 -->
+    <div class="card" id="quickActions" style="display: none;">
+      <div class="card-body">
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+          <span style="font-weight: 600;">快速設定：</span>
+          <button class="btn btn-success btn-sm" onclick="setAllStatus('出席')">
+            <i class="fas fa-check-double"></i> 全部出席
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="clearAllStatus()">
+            <i class="fas fa-eraser"></i> 清除全部
+          </button>
+          <span class="text-muted" style="margin-left: auto;">
+            已記錄：<span id="recordCount">0</span> / <span id="totalCount">0</span> 位
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    <!-- 學生點名表 -->
+    <div class="card" id="attendanceSection" style="display: none;">
+      <div class="card-header">
+        <h2 class="card-title">
+          <i class="fas fa-clipboard-list"></i>
+          學生點名
+        </h2>
+        <div>
+          <span class="badge badge-info" id="selectedClassName"></span>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="attendanceGrid" class="attendance-grid">
+          <div class="loading">
+            <div class="spinner"></div>
+            <p>載入學生名單中...</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  
+  <script>
+    let gradesData = [];
+    let classesData = [];
+    let studentsData = [];
+    let selectedGrade = null;
+    let selectedClassSeq = null;
+    let selectedClassName = null;
+    
+    window.onload = function() {
+      updateTodayDate();
+      loadGrades();
+    };
+    
+    /**
+     * 更新今天日期顯示
+     */
+    function updateTodayDate() {
+      const today = new Date();
+      const dateString = today.toLocaleDateString('zh-TW', {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        weekday: 'long'
+      });
+      document.getElementById('todayDate').textContent = dateString;
+    }
+    
+    /**
+     * 載入年級資料
+     */
+    function loadGrades() {
+      showLoading('gradeSelector');
+      
+      google.script.run
+        .withSuccessHandler(onGradesLoaded)
+        .withFailureHandler(onDataError)
+        .getClassesListForUI();
+    }
+    
+    /**
+     * 年級資料載入成功
+     */
+    function onGradesLoaded(classes) {
+      if (classes.error) {
+        showError('gradeSelector', classes.error);
+        return;
+      }
+      
+      classesData = classes;
+      
+      // Extract unique grades
+      const grades = [...new Set(classes.map(c => c.grade))].sort((a, b) => a - b);
+      gradesData = grades;
+      
+      renderGradeSelector();
+    }
+    
+    /**
+     * 渲染年級選擇器
+     */
+    function renderGradeSelector() {
+      const container = document.getElementById('gradeSelector');
+      
+      if (gradesData.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <i class="fas fa-exclamation-circle"></i>
+            <p>無年級資料，請先同步 tc-api 資料</p>
+            <button class="btn btn-primary btn-sm" onclick="location.href='?page=sync'">
+              <i class="fas fa-sync"></i> 前往同步頁面
+            </button>
+          </div>
+        `;
+        return;
+      }
+      
+      let html = '';
+      gradesData.forEach(grade => {
+        html += `
+          <button class="grade-btn" onclick="selectGrade(${grade})">
+            ${grade} 年級
+          </button>
+        `;
+      });
+      
+      container.innerHTML = html;
+    }
+    
+    /**
+     * 選擇年級
+     */
+    function selectGrade(grade) {
+      selectedGrade = grade;
+      
+      // Update grade button states
+      document.querySelectorAll('.grade-btn').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      event.target.classList.add('active');
+      
+      // Show class selector
+      document.getElementById('classSection').style.display = 'block';
+      
+      // Filter classes by grade
+      const gradeClasses = classesData.filter(c => c.grade == grade);
+      
+      renderClassSelector(gradeClasses);
+      
+      // Scroll to class section
+      document.getElementById('classSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    
+    /**
+     * 渲染班級選擇器
+     */
+    function renderClassSelector(classes) {
+      const container = document.getElementById('classSelector');
+      
+      if (classes.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <i class="fas fa-users-slash"></i>
+            <p>此年級無班級資料</p>
+          </div>
+        `;
+        return;
+      }
+      
+      let html = '';
+      classes.forEach(c => {
+        html += `
+          <div class="class-card" onclick="selectClass(${c.grade}, ${c.class_seq}, '${c.class_name}')">
+            <div class="class-card-title">${c.class_name}</div>
+            <div class="class-card-info">
+              ${c.grade} 年級 ${c.class_seq} 班
+            </div>
+          </div>
+        `;
+      });
+      
+      container.innerHTML = html;
+    }
+    
+    /**
+     * 選擇班級
+     */
+    function selectClass(grade, classSeq, className) {
+      selectedGrade = grade;
+      selectedClassSeq = classSeq;
+      selectedClassName = className;
+      
+      // Update class card states
+      document.querySelectorAll('.class-card').forEach(card => {
+        card.classList.remove('selected');
+      });
+      event.target.closest('.class-card').classList.add('selected');
+      
+      // Show quick actions and attendance section
+      document.getElementById('quickActions').style.display = 'block';
+      document.getElementById('attendanceSection').style.display = 'block';
+      document.getElementById('submitBtn').style.display = 'inline-flex';
+      
+      // Update class name badge
+      document.getElementById('selectedClassName').textContent = className;
+      
+      // Load students
+      loadStudentsByClass(grade, classSeq);
+      
+      // Scroll to attendance section
+      document.getElementById('attendanceSection').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    
+    /**
+     * 載入班級學生
+     */
+    function loadStudentsByClass(grade, classSeq) {
+      showLoading('attendanceGrid');
+      
+      google.script.run
+        .withSuccessHandler(onStudentsLoaded)
+        .withFailureHandler(onDataError)
+        .getStudentsByClassForAttendance(grade, classSeq);
+    }
+    
+    /**
+     * 學生資料載入成功
+     */
+    function onStudentsLoaded(data) {
+      if (data.error) {
+        showError('attendanceGrid', data.error);
+        return;
+      }
+      
+      studentsData = data;
+      document.getElementById('totalCount').textContent = data.length;
+      renderAttendanceGrid();
+      updateRecordCount();
+    }
+    
+    /**
+     * 渲染點名表格
+     */
+    function renderAttendanceGrid() {
+      const container = document.getElementById('attendanceGrid');
+      
+      if (!studentsData || studentsData.length === 0) {
+        container.innerHTML = `
+          <div class="empty-state">
+            <i class="fas fa-users-slash"></i>
+            <p>此班級無學生資料</p>
+          </div>
+        `;
+        return;
+      }
+      
+      let html = '';
+      studentsData.forEach((student, index) => {
+        const hasRecord = student.hasRecord;
+        const recordClass = hasRecord ? 'has-record' : '';
+        
+        html += `
+          <div class="student-card ${recordClass}" id="card-${index}">
+            <div class="student-header">
+              <div class="student-name">${student.name}</div>
+              <div class="student-seat">座號 ${student.seat_no}</div>
+            </div>
+            
+            <div class="status-buttons">
+              <button class="status-btn present ${student.status === '出席' ? 'active' : ''}" 
+                      onclick="setStatus(${index}, '出席')">
+                ✓ 出席
+              </button>
+              <button class="status-btn sick ${student.status === '病假' ? 'active' : ''}" 
+                      onclick="setStatus(${index}, '病假')">
+                🏥 病假
+              </button>
+              <button class="status-btn personal ${student.status === '事假' ? 'active' : ''}" 
+                      onclick="setStatus(${index}, '事假')">
+                📋 事假
+              </button>
+              <button class="status-btn absent ${student.status === '曠課' ? 'active' : ''}" 
+                      onclick="setStatus(${index}, '曠課')">
+                ❌ 曠課
+              </button>
+              <button class="status-btn late ${student.status === '遲到' ? 'active' : ''}" 
+                      onclick="setStatus(${index}, '遲到')">
+                ⏰ 遲到
+              </button>
+            </div>
+            
+            <textarea class="student-notes" 
+                      id="notes-${index}" 
+                      placeholder="備註 (選填)">${student.notes || ''}</textarea>
+          </div>
+        `;
+      });
+      
+      container.innerHTML = html;
+    }
+    
+    /**
+     * 設定學生狀態
+     */
+    function setStatus(index, status) {
+      // Update status
+      studentsData[index].status = status;
+      
+      // Update button states
+      const card = document.getElementById(`card-${index}`);
+      card.querySelectorAll('.status-btn').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      event.target.classList.add('active');
+      
+      // Mark as has record
+      card.classList.add('has-record');
+      
+      updateRecordCount();
+    }
+    
+    /**
+     * 設定所有學生的狀態
+     */
+    function setAllStatus(status) {
+      studentsData.forEach((student, index) => {
+        studentsData[index].status = status;
+      });
+      
+      renderAttendanceGrid();
+      updateRecordCount();
+    }
+    
+    /**
+     * 清除所有狀態
+     */
+    function clearAllStatus() {
+      if (!confirmAction('確定要清除所有點名記錄嗎？')) {
+        return;
+      }
+      
+      studentsData.forEach((student, index) => {
+        studentsData[index].status = '';
+        studentsData[index].notes = '';
+      });
+      
+      renderAttendanceGrid();
+      updateRecordCount();
+    }
+    
+    /**
+     * 更新已記錄數量
+     */
+    function updateRecordCount() {
+      let count = 0;
+      studentsData.forEach(student => {
+        if (student.status && student.status !== '') {
+          count++;
+        }
+      });
+      document.getElementById('recordCount').textContent = count;
+    }
+    
+    /**
+     * 提交點名記錄
+     */
+    function submitAttendance() {
+      const submitBtn = document.getElementById('submitBtn');
+      const originalHTML = submitBtn.innerHTML;
+      
+      // Collect data
+      const records = [];
+      studentsData.forEach((student, index) => {
+        const status = student.status;
+        const notesEl = document.getElementById(`notes-${index}`);
+        const notes = notesEl ? notesEl.value : '';
+        
+        if (status && status !== '') {
+          records.push({
+            seat_no: student.seat_no,
+            seatNumber: student.seat_no,
+            name: student.name,
+            status: status,
+            notes: notes
+          });
+        }
+      });
+      
+      if (records.length === 0) {
+        alert('請至少選擇一位學生的出席狀態！');
+        return;
+      }
+      
+      if (!confirmAction(`確定要儲存 ${records.length} 位學生的點名記錄嗎？`)) {
+        return;
+      }
+      
+      // Disable button
+      submitBtn.disabled = true;
+      submitBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i> 儲存中...';
+      
+      // Submit data
+      google.script.run
+        .withSuccessHandler(function(result) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalHTML;
+          
+          if (result.success) {
+            showSuccess(result.message);
+            // Reload students to refresh hasRecord status
+            setTimeout(() => loadStudentsByClass(selectedGrade, selectedClassSeq), 1000);
+          } else {
+            alert('儲存失敗：' + result.error);
+          }
+        })
+        .withFailureHandler(function(error) {
+          submitBtn.disabled = false;
+          submitBtn.innerHTML = originalHTML;
+          alert('發生錯誤：' + error);
+        })
+        .handleAddAttendance({
+          records: records,
+          grade: selectedGrade,
+          classSeq: selectedClassSeq
+        });
+    }
+    
+    /**
+     * 重新選擇
+     */
+    function resetSelection() {
+      selectedGrade = null;
+      selectedClassSeq = null;
+      selectedClassName = null;
+      studentsData = [];
+      
+      document.getElementById('classSection').style.display = 'none';
+      document.getElementById('quickActions').style.display = 'none';
+      document.getElementById('attendanceSection').style.display = 'none';
+      document.getElementById('submitBtn').style.display = 'none';
+      
+      document.querySelectorAll('.grade-btn').forEach(btn => {
+        btn.classList.remove('active');
+      });
+      
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+    
+    /**
+     * 資料載入失敗
+     */
+    function onDataError(error) {
+      console.error('載入資料失敗:', error);
+      showError('gradeSelector', '載入失敗：' + error);
+    }
+  </script>
+</body>
+</html>
+

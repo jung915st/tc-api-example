@@ -1,0 +1,214 @@
+<!-- Unauthorized_v1.0.0.html -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>無權限 - 班級管理系統</title>
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .container {
+      background: white;
+      border-radius: 16px;
+      padding: 60px 40px;
+      max-width: 500px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    
+    .icon {
+      font-size: 80px;
+      color: #f44336;
+      margin-bottom: 30px;
+    }
+    
+    h1 {
+      font-size: 32px;
+      color: #333;
+      margin-bottom: 15px;
+    }
+    
+    p {
+      color: #666;
+      line-height: 1.8;
+      margin-bottom: 15px;
+    }
+    
+    .email {
+      background: #f5f5f5;
+      padding: 12px;
+      border-radius: 6px;
+      font-family: monospace;
+      color: #333;
+      margin: 20px 0;
+    }
+    
+    .info-box {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      padding: 15px;
+      border-radius: 6px;
+      text-align: left;
+      margin-top: 30px;
+    }
+    
+    .info-box strong {
+      display: block;
+      margin-bottom: 10px;
+      color: #856404;
+    }
+    
+    .info-box ul {
+      margin-left: 20px;
+      color: #856404;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">
+      <i class="fas fa-lock"></i>
+    </div>
+    
+    <h1>無權限存取</h1>
+    
+    <p>抱歉，您的帳號沒有權限存取此系統。</p>
+    
+    <div class="email">
+      <i class="fas fa-user-circle"></i>
+      <strong><script>document.write(Session.getActiveUser().getEmail());</script></strong>
+    </div>
+    
+    <p>如果您認為這是錯誤，請聯絡系統管理員。</p>
+    
+    <div class="info-box">
+      <strong><i class="fas fa-info-circle"></i> 可能的原因：</strong>
+      <ul>
+        <li>您的 Email 不在授權清單中</li>
+        <li>系統設定了網域限制</li>
+        <li>權限驗證功能已啟用</li>
+      </ul>
+    </div>
+  </div>
+</body>
+</html>
+
+<!-- ================================= -->
+
+<!-- Error_v1.0.0.html -->
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>系統錯誤 - 班級管理系統</title>
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    body {
+      font-family: 'Noto Sans TC', 'Microsoft JhengHei', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .container {
+      background: white;
+      border-radius: 16px;
+      padding: 60px 40px;
+      max-width: 600px;
+      text-align: center;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+    }
+    
+    .icon {
+      font-size: 80px;
+      color: #f44336;
+      margin-bottom: 30px;
+    }
+    
+    h1 {
+      font-size: 32px;
+      color: #333;
+      margin-bottom: 15px;
+    }
+    
+    p {
+      color: #666;
+      line-height: 1.8;
+      margin-bottom: 15px;
+    }
+    
+    .error-message {
+      background: #fee;
+      border-left: 4px solid #f44336;
+      padding: 15px;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+      color: #c00;
+      text-align: left;
+      margin: 20px 0;
+      word-break: break-word;
+    }
+    
+    .btn {
+      display: inline-block;
+      padding: 12px 30px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      text-decoration: none;
+      border-radius: 6px;
+      margin-top: 20px;
+      transition: transform 0.3s ease;
+    }
+    
+    .btn:hover {
+      transform: translateY(-2px);
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="icon">
+      <i class="fas fa-exclamation-triangle"></i>
+    </div>
+    
+    <h1>系統錯誤</h1>
+    
+    <p>很抱歉，系統發生錯誤。</p>
+    
+    <div class="error-message">
+      <?= errorMessage ?>
+    </div>
+    
+    <p>請嘗試重新載入頁面，或聯絡系統管理員。</p>
+    
+    <a href="?page=dashboard" class="btn">
+      <i class="fas fa-home"></i> 返回首頁
+    </a>
+  </div>
+</body>
+</html>
