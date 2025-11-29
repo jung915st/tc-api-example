@@ -927,14 +927,17 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
 - **專案目標：** 建立一個能接收使用者傳送的圖片、辨識圖片中的文字，並將文字回傳給使用者的 LINE 機器人。
 - **核心架構：** LINE (傳送圖片) → Make.com (自動化流程) → imgbb (圖片暫存) → Mistral AI Pixtral (OCR辨識) → LINE (回傳文字)
 
-- **前置準備：取得必要的 API 金鑰**
-  1. **imgbb API Key：**
-     - 前往 [https://api.imgbb.com/](https://api.imgbb.com/)
-     - 註冊帳號後，在首頁即可看到並複製您的 API Key
+- **前置準備：取得必要的帳號與 API 金鑰**
+  1. **imgbb 帳號：**
+     - 前往 [https://imgbb.com/](https://imgbb.com/) 註冊帳號
+     - Make.com 提供原生 [ImgBB 模組](https://apps.make.com/imgbb)，會自動處理 API 連線
+     - (備用) 若需使用 HTTP 模組，可至 [https://api.imgbb.com/](https://api.imgbb.com/) 取得 API Key
   2. **Mistral AI API Key：**
      - 前往 [https://console.mistral.ai/](https://console.mistral.ai/)
      - 註冊帳號後，前往 API Keys 頁面建立新的 API Key
-     - **【重要】** 免費方案有使用限制，請確認您的帳戶狀態
+     - Make.com 提供原生 [Mistral AI 模組](https://apps.make.com/mistral-ai)
+     - **【注意】** 根據 Make.com 文件，使用原生模組需要 Mistral AI **付費訂閱**
+     - 若無付費帳戶，可改用 HTTP 模組直接呼叫 API (免費額度有限)
 
 - **使用工具與 API 概念：**
   - **LINE Messaging API:**
@@ -967,12 +970,14 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
            ↓ (Filter: message.type = "image")
     [3] LINE: Download a Message Content
            ↓
-    [4] HTTP: Make a request (上傳至 imgbb)
+    [4] ImgBB: Upload a Photo (原生模組)
            ↓
-    [5] HTTP: Make a request (呼叫 Mistral Pixtral)
+    [5] Mistral AI: Make an API Call (原生模組)
            ↓
     [6] LINE: Send a Reply Message
     ```
+    
+    **🎉 全程使用原生模組！** 不需要任何 HTTP 模組，設定更簡單。
 
   - **詳細模組設定步驟：**
 
@@ -1027,14 +1032,43 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     - `{{3.fileName}}` - 檔案名稱 (可能為空)
 
     ---
-    ### **步驟 4：模組 B - HTTP > Make a request (上傳至 imgbb)**
+    ### **步驟 4：模組 B - ImgBB > Upload a Photo (推薦方法)**
     
-    將圖片上傳到 imgbb 圖床服務，取得一個永久的公開 URL。
+    Make.com 提供原生的 ImgBB 模組，比使用 HTTP 模組更簡單！
     
-    **【重要】imgbb API 接受 Base64 編碼的圖片資料。**
+    **參考文件：** [Make.com ImgBB Documentation](https://apps.make.com/imgbb)
     
-    在 Make.com 中，使用 `toString()` 函數將二進位資料轉換為 Base64：
-    - 語法：`{{toString(3.data; "base64")}}`
+    **首次使用需建立 Connection：**
+    1. 點擊 Connection 旁的 `Add` 按鈕
+    2. 為連結命名 (例如：「我的 ImgBB」)
+    3. 系統會引導您登入 ImgBB 帳號並授權
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Connection** | 選擇或建立您的 ImgBB 連結 |
+    | **Source File** | `Map` (選擇映射模式) |
+    | **File Name** | `{{3.fileName}}` 或輸入自訂名稱如 `image.jpg` |
+    | **Data** | `{{3.data}}` (來自 LINE Download 模組的檔案資料) |
+    
+    **【優點】使用原生模組的好處：**
+    - ✅ 不需要手動管理 API Key
+    - ✅ 不需要 Base64 編碼轉換
+    - ✅ Make.com 自動處理連線與認證
+    - ✅ 更清晰的錯誤訊息
+    
+    **輸出變數 (用於下一步)：**
+    - `{{4.url}}` - 圖片的公開 URL ⭐
+    - `{{4.display_url}}` - 圖片顯示 URL (備用)
+    - `{{4.delete_url}}` - 刪除圖片用的 URL
+    
+    ---
+    
+    <details>
+    <summary>📋 **備用方法：使用 HTTP 模組 (點擊展開)**</summary>
+    
+    如果您偏好使用 HTTP 模組或無法使用原生 ImgBB 模組，可以改用以下設定：
+    
+    **前置作業：** 至 [https://api.imgbb.com/](https://api.imgbb.com/) 取得 API Key
     
     | 設定項目 | 設定值 |
     |---------|--------|
@@ -1042,61 +1076,45 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     | **Method** | `POST` |
     | **Body type** | `Application/x-www-form-urlencoded` |
     
-    **Fields (點擊 Add item 新增欄位)：**
+    **Fields：**
     
     | Key | Value |
     |-----|-------|
-    | `key` | `您的_IMGBB_API_KEY` (直接貼上您的金鑰) |
+    | `key` | `您的_IMGBB_API_KEY` |
     | `image` | `{{toString(3.data; "base64")}}` |
     
-    **其他設定：**
-    
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **Parse response** | `Yes` ✅ (勾選) |
+    | **Parse response** | `Yes` ✅ |
     
-    **imgbb API 回應範例：**
-    ```json
-    {
-      "data": {
-        "id": "abc123",
-        "url": "https://i.ibb.co/xxxxx/image.jpg",
-        "display_url": "https://i.ibb.co/xxxxx/image.jpg",
-        "delete_url": "https://ibb.co/xxxxx/xxxxxxx"
-      },
-      "success": true,
-      "status": 200
-    }
-    ```
+    **輸出變數：** `{{4.data.url}}` (注意路徑與原生模組不同)
     
-    **輸出變數 (用於下一步)：**
-    - `{{4.data.url}}` - 圖片的公開 URL ⭐
+    </details>
 
     ---
-    ### **步驟 5：模組 C - HTTP > Make a request (呼叫 Mistral AI Pixtral)**
+    ### **步驟 5：模組 C - Mistral AI > Make an API Call (推薦方法)**
     
-    **【重要修正】** 必須使用 Pixtral 視覺模型，不能用 `mistral-large-latest`！
+    Make.com 提供原生 Mistral AI 模組！使用 **Make an API Call** 動作可以自動處理認證，同時保留完整的 API 控制權。
+    
+    **參考文件：** [Make.com Mistral AI Documentation](https://apps.make.com/mistral-ai)
+    
+    **【重要】** 必須使用 **Pixtral 視覺模型**，不能用 `mistral-large-latest`！
+    
+    **首次使用需建立 Connection：**
+    1. 點擊 Connection 旁的 `Add` 按鈕
+    2. 為連結命名 (例如：「我的 Mistral AI」)
+    3. 輸入您的 Mistral AI API Key
+    4. 點擊 Save
+    
+    **【注意】** 根據 Make.com 文件，Mistral AI 需要**付費訂閱**才能使用。
     
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **URL** | `https://api.mistral.ai/v1/chat/completions` |
+    | **Connection** | 選擇或建立您的 Mistral AI 連結 |
+    | **URL** | `/v1/chat/completions` |
     | **Method** | `POST` |
     
-    **Headers (點擊 Add item 新增)：**
-    
-    | Name | Value |
-    |------|-------|
-    | `Content-Type` | `application/json` |
-    | `Authorization` | `Bearer 您的_MISTRAL_API_KEY` |
-    
-    **Body 設定：**
-    
-    | 設定項目 | 設定值 |
-    |---------|--------|
-    | **Body type** | `Raw` |
-    | **Content type** | `JSON (application/json)` |
-    
-    **Request content (JSON Body)：**
+    **Body (JSON)：**
     
     ```json
     {
@@ -1112,7 +1130,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
             {
               "type": "image_url",
               "image_url": {
-                "url": "{{4.data.url}}"
+                "url": "{{4.url}}"
               }
             }
           ]
@@ -1123,14 +1141,51 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     ```
     
     **【變數說明】**
-    - `{{4.data.url}}` 是從上一步 imgbb 模組取得的圖片公開網址
+    - **使用原生 ImgBB 模組：** `{{4.url}}` - 直接取得圖片 URL
+    - **使用 HTTP 模組上傳 imgbb：** `{{4.data.url}}` - 需多一層 data
     - 在 Make.com 編輯 JSON 時，可以直接在 `"url": "` 後方點擊，從變數面板選取
     
-    **其他設定：**
+    **【優點】使用原生 Mistral 模組的好處：**
+    - ✅ 自動處理 Authorization header
+    - ✅ 連線管理更方便
+    - ✅ 不需要手動填寫完整 URL
+    - ✅ 更好的錯誤提示
+    
+    **輸出變數 (用於下一步)：**
+    - `{{5.data.choices[1].message.content}}` - OCR 辨識結果文字 ⭐
+    - **【注意】** Make.com 的陣列索引是 1-based，所以 `choices[0]` 要寫成 `choices[1]`
+    
+    ---
+    
+    <details>
+    <summary>📋 **備用方法：使用 HTTP 模組 (點擊展開)**</summary>
+    
+    如果您沒有 Mistral 付費帳戶或偏好使用 HTTP 模組：
     
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **Parse response** | `Yes` ✅ (勾選) |
+    | **URL** | `https://api.mistral.ai/v1/chat/completions` |
+    | **Method** | `POST` |
+    
+    **Headers：**
+    
+    | Name | Value |
+    |------|-------|
+    | `Content-Type` | `application/json` |
+    | `Authorization` | `Bearer 您的_MISTRAL_API_KEY` |
+    
+    **Body type:** `Raw`  
+    **Content type:** `JSON (application/json)`
+    
+    **Request content:** (使用上方相同的 JSON Body)
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Parse response** | `Yes` ✅ |
+    
+    </details>
+    
+    ---
     
     **Mistral API 回應範例：**
     ```json
@@ -1154,10 +1209,6 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
       }
     }
     ```
-    
-    **輸出變數 (用於下一步)：**
-    - `{{5.data.choices[1].message.content}}` - OCR 辨識結果文字 ⭐
-    - **【注意】** Make.com 的陣列索引是 1-based，所以 `choices[0]` 要寫成 `choices[1]`
 
     ---
     ### **步驟 6：模組 D - LINE > Send a Reply Message**
@@ -1217,13 +1268,24 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     
     在啟用 Scenario 之前，請確認：
     
+    **連線設定：**
     - [ ] LINE Connection 已正確設定且授權有效
-    - [ ] imgbb API Key 已正確填入
-    - [ ] Mistral API Key 已正確填入
+    - [ ] ImgBB Connection 已建立並授權
+    - [ ] Mistral AI Connection 已建立 (需輸入 API Key)
+    
+    **模組設定：**
     - [ ] 模型名稱使用 `pixtral-12b-2409` (不是 mistral-large-latest)
+    - [ ] 圖片 URL 變數正確：原生 ImgBB 模組用 `{{4.url}}`
     - [ ] 所有變數路徑正確 (特別注意 Make.com 陣列是 1-based)
-    - [ ] Parse response 都已勾選
     - [ ] 已設定 Fallback 路徑處理非圖片訊息
+    
+    **原生模組 vs HTTP 模組對照：**
+    
+    | 項目 | 原生模組 (推薦) | HTTP 模組 (備用) |
+    |------|----------------|------------------|
+    | ImgBB URL 變數 | `{{4.url}}` | `{{4.data.url}}` |
+    | Mistral URL | `/v1/chat/completions` | `https://api.mistral.ai/v1/chat/completions` |
+    | 認證方式 | Connection 自動處理 | 手動填 Authorization header |
 
     ---
     ### **測試流程**
@@ -1250,6 +1312,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     **URL:** `https://api.openai.com/v1/chat/completions`
     
     **Headers:**
+    - `Content-Type`: `application/json`
     - `Authorization`: `Bearer 您的_OPENAI_API_KEY`
     
     **Body:**
@@ -1267,7 +1330,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
             {
               "type": "image_url",
               "image_url": {
-                "url": "{{4.data.url}}"
+                "url": "{{4.url}}"
               }
             }
           ]
@@ -1276,6 +1339,8 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
       "max_tokens": 1024
     }
     ```
+    
+    **【注意】** 若使用 HTTP 模組上傳 imgbb，請將 `{{4.url}}` 改為 `{{4.data.url}}`
 
 ##
 
