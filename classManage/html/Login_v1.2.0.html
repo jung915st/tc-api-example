@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>教師登入 - 班級管理系統</title>
+  
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    body {
+      font-family: 'Noto Sans TC', sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    
+    .login-container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      max-width: 450px;
+      width: 100%;
+      padding: 40px;
+    }
+    
+    .login-header {
+      text-align: center;
+      margin-bottom: 35px;
+    }
+    
+    .login-icon {
+      font-size: 64px;
+      color: #667eea;
+      margin-bottom: 15px;
+    }
+    
+    .login-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    
+    .login-subtitle {
+      font-size: 14px;
+      color: #666;
+    }
+    
+    .form-group {
+      margin-bottom: 24px;
+    }
+    
+    .form-label {
+      display: block;
+      font-size: 14px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    
+    .form-label .required {
+      color: #e74c3c;
+    }
+    
+    .form-select,
+    .form-input {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 15px;
+      border: 2px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: 'Noto Sans TC', sans-serif;
+      transition: border-color 0.3s ease;
+    }
+    
+    .form-select:focus,
+    .form-input:focus {
+      outline: none;
+      border-color: #667eea;
+    }
+    
+    .form-select {
+      cursor: pointer;
+      background-color: white;
+    }
+    
+    .form-help {
+      font-size: 13px;
+      color: #666;
+      margin-top: 6px;
+    }
+    
+    .teaching-info {
+      background: #f8f9fa;
+      padding: 12px 16px;
+      border-radius: 8px;
+      font-size: 14px;
+      color: #555;
+      line-height: 1.6;
+      display: none;
+    }
+    
+    .teaching-info.active {
+      display: block;
+    }
+    
+    .teaching-label {
+      font-weight: 600;
+      color: #667eea;
+      margin-bottom: 6px;
+    }
+    
+    .class-tag {
+      display: inline-block;
+      background: #667eea;
+      color: white;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    
+    .subject-tag {
+      display: inline-block;
+      background: #e9ecef;
+      color: #495057;
+      padding: 4px 10px;
+      border-radius: 12px;
+      font-size: 12px;
+      margin-right: 6px;
+      margin-bottom: 6px;
+    }
+    
+    .btn-login {
+      width: 100%;
+      padding: 14px;
+      font-size: 16px;
+      font-weight: 600;
+      color: white;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .btn-login:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+    }
+    
+    .btn-login:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .alert {
+      padding: 12px 16px;
+      border-radius: 8px;
+      margin-bottom: 20px;
+      font-size: 14px;
+    }
+    
+    .alert-error {
+      background: #fee;
+      color: #c33;
+      border: 1px solid #fcc;
+    }
+    
+    .alert-success {
+      background: #efe;
+      color: #3c3;
+      border: 1px solid #cfc;
+    }
+    
+    .alert-info {
+      background: #e7f3ff;
+      color: #0066cc;
+      border: 1px solid #b3d9ff;
+    }
+    
+    .hidden {
+      display: none !important;
+    }
+    
+    .loading-spinner {
+      display: inline-block;
+      width: 16px;
+      height: 16px;
+      border: 2px solid #ffffff;
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      margin-right: 8px;
+      vertical-align: middle;
+    }
+    
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    
+    .version {
+      text-align: center;
+      margin-top: 20px;
+      font-size: 12px;
+      color: #999;
+    }
+    
+    .sync-section {
+      background: #fff3cd;
+      border: 2px solid #ffc107;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 24px;
+      text-align: center;
+    }
+    
+    .sync-icon {
+      font-size: 48px;
+      color: #ffc107;
+      margin-bottom: 12px;
+    }
+    
+    .sync-title {
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    
+    .sync-desc {
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 16px;
+      line-height: 1.6;
+    }
+    
+    .btn-sync {
+      padding: 12px 24px;
+      font-size: 15px;
+      font-weight: 600;
+      color: white;
+      background: linear-gradient(135deg, #ffc107 0%, #ff9800 100%);
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+    }
+    
+    .btn-sync:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(255, 193, 7, 0.4);
+    }
+    
+    .btn-sync:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      transform: none;
+    }
+    
+    .sync-log {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 16px;
+      border-radius: 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 12px;
+      max-height: 200px;
+      overflow-y: auto;
+      text-align: left;
+      line-height: 1.6;
+      margin-top: 16px;
+      display: none;
+    }
+    
+    .sync-log.active {
+      display: block;
+    }
+    
+    .log-entry {
+      margin-bottom: 4px;
+    }
+    
+    .log-success {
+      color: #4caf50;
+    }
+    
+    .log-error {
+      color: #f44336;
+    }
+    
+    .log-info {
+      color: #4ec9b0;
+    }
+    
+    @media (max-width: 480px) {
+      .login-container {
+        padding: 30px 20px;
+      }
+      
+      .login-title {
+        font-size: 24px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="login-container">
+    <div class="login-header">
+      <div class="login-icon">
+        <i class="fas fa-user-graduate"></i>
+      </div>
+      <h1 class="login-title">教師登入</h1>
+      <p class="login-subtitle">班級管理系統</p>
+    </div>
+    
+    <div id="alertContainer"></div>
+    
+    <!-- Sync Section (shown when no teachers found) -->
+    <div id="syncSection" class="sync-section hidden">
+      <div class="sync-icon">
+        <i class="fas fa-database"></i>
+      </div>
+      <h2 class="sync-title">首次部署設定</h2>
+      <p class="sync-desc">
+        系統偵測到尚未同步教師資料。<br>
+        請點選下方按鈕，從臺中市校務系統同步教師、班級與學生資料。<br>
+        此操作需要 30 秒至 2 分鐘。
+      </p>
+      <button class="btn-sync" id="syncBtn" onclick="startSync()">
+        <i class="fas fa-sync-alt"></i> 開始同步資料
+      </button>
+      <div id="syncLog" class="sync-log"></div>
+    </div>
+    
+    <form id="loginForm" onsubmit="handleLogin(event)">
+      <div class="form-group">
+        <label class="form-label" for="teacherSelect">
+          選擇教師姓名 <span class="required">*</span>
+        </label>
+        <select class="form-select" id="teacherSelect" required onchange="handleTeacherSelect()">
+          <option value="">請選擇...</option>
+        </select>
+        <p class="form-help">請從清單中選擇您的姓名</p>
+      </div>
+      
+      <div id="teachingInfo" class="teaching-info">
+        <div class="teaching-label">任教班級與科目</div>
+        <div id="teachingClasses"></div>
+        <div id="teachingSubjects"></div>
+      </div>
+      
+      <div class="form-group">
+        <label class="form-label" for="emailInput">
+          Email <span class="required">*</span>
+        </label>
+        <input 
+          type="email" 
+          class="form-input" 
+          id="emailInput" 
+          placeholder="請輸入您的 Email"
+          required
+        />
+        <p class="form-help">首次登入將記錄此 Email，之後登入需輸入相同 Email</p>
+      </div>
+      
+      <div class="form-group">
+        <label class="form-label" for="passcodeInput">
+          密碼 <span class="required">*</span>
+        </label>
+        <input 
+          type="password" 
+          class="form-input" 
+          id="passcodeInput" 
+          placeholder="請輸入密碼"
+          required
+          maxlength="8"
+        />
+        <p class="form-help">測試用預設密碼：8888</p>
+      </div>
+      
+      <button type="submit" class="btn-login" id="loginBtn">
+        <i class="fas fa-sign-in-alt"></i> 登入
+      </button>
+    </form>
+    
+    <div class="version">
+      版本：<?= version ?>
+    </div>
+  </div>
+  
+  <script>
+    let teachersData = [];
+    let selectedTeacher = null;
+    
+    window.onload = function() {
+      loadTeachers();
+    };
+    
+    /**
+     * Load teachers list
+     */
+    function loadTeachers() {
+      showAlert('載入教師清單中...', 'info');
+      
+      google.script.run
+        .withSuccessHandler(function(teachers) {
+          hideAlert();
+          teachersData = teachers;
+          
+          if (teachers && teachers.length > 0) {
+            // Teachers found, show login form
+            populateTeacherSelect(teachers);
+            document.getElementById('loginForm').classList.remove('hidden');
+            document.getElementById('syncSection').classList.add('hidden');
+          } else {
+            // No teachers found, show sync section
+            document.getElementById('loginForm').classList.add('hidden');
+            document.getElementById('syncSection').classList.remove('hidden');
+            showAlert('尚未同步教師資料，請先執行資料同步', 'info');
+          }
+        })
+        .withFailureHandler(function(error) {
+          showAlert('載入教師清單失敗：' + error, 'error');
+          // Show sync section on error too
+          document.getElementById('loginForm').classList.add('hidden');
+          document.getElementById('syncSection').classList.remove('hidden');
+        })
+        .getTeachersForLogin();
+    }
+    
+    /**
+     * Populate teacher select dropdown
+     */
+    function populateTeacherSelect(teachers) {
+      const select = document.getElementById('teacherSelect');
+      select.innerHTML = '<option value="">請選擇...</option>';
+      
+      teachers.forEach(teacher => {
+        const option = document.createElement('option');
+        option.value = teacher.uid;
+        option.textContent = teacher.displayInfo;
+        option.dataset.teacher = JSON.stringify(teacher);
+        select.appendChild(option);
+      });
+    }
+    
+    /**
+     * Handle teacher selection
+     */
+    function handleTeacherSelect() {
+      const select = document.getElementById('teacherSelect');
+      const selectedOption = select.options[select.selectedIndex];
+      
+      if (!selectedOption.value) {
+        selectedTeacher = null;
+        document.getElementById('teachingInfo').classList.remove('active');
+        return;
+      }
+      
+      selectedTeacher = JSON.parse(selectedOption.dataset.teacher);
+      displayTeachingInfo(selectedTeacher);
+    }
+    
+    /**
+     * Display teaching information
+     */
+    function displayTeachingInfo(teacher) {
+      const infoDiv = document.getElementById('teachingInfo');
+      const classesDiv = document.getElementById('teachingClasses');
+      const subjectsDiv = document.getElementById('teachingSubjects');
+      
+      // Display teaching classes
+      if (teacher.teachingClasses && teacher.teachingClasses.length > 0) {
+        classesDiv.innerHTML = '<div style="margin-bottom: 8px;"><strong>任教班級：</strong></div>';
+        teacher.teachingClasses.forEach(cls => {
+          const tag = document.createElement('span');
+          tag.className = 'class-tag';
+          tag.textContent = cls.className;
+          classesDiv.appendChild(tag);
+        });
+      } else {
+        classesDiv.innerHTML = '<div><strong>職務：</strong> ' + teacher.office + ' - ' + teacher.title + '</div>';
+      }
+      
+      // Display subjects
+      if (teacher.subjects && teacher.subjects.length > 0) {
+        subjectsDiv.innerHTML = '<div style="margin-top: 8px; margin-bottom: 8px;"><strong>任教科目：</strong></div>';
+        teacher.subjects.forEach(subject => {
+          const tag = document.createElement('span');
+          tag.className = 'subject-tag';
+          tag.textContent = subject;
+          subjectsDiv.appendChild(tag);
+        });
+      } else {
+        subjectsDiv.innerHTML = '';
+      }
+      
+      infoDiv.classList.add('active');
+    }
+    
+    /**
+     * Handle login form submission
+     */
+    function handleLogin(event) {
+      event.preventDefault();
+      
+      const teacherUid = document.getElementById('teacherSelect').value;
+      const email = document.getElementById('emailInput').value.trim();
+      const passcode = document.getElementById('passcodeInput').value;
+      
+      if (!teacherUid) {
+        showAlert('請選擇教師姓名', 'error');
+        return;
+      }
+      
+      if (!email) {
+        showAlert('請輸入 Email', 'error');
+        return;
+      }
+      
+      if (!passcode) {
+        showAlert('請輸入密碼', 'error');
+        return;
+      }
+      
+      // Disable form
+      const loginBtn = document.getElementById('loginBtn');
+      loginBtn.disabled = true;
+      loginBtn.innerHTML = '<span class="loading-spinner"></span> 登入中...';
+      
+      // Call login API
+      google.script.run
+        .withSuccessHandler(handleLoginSuccess)
+        .withFailureHandler(handleLoginError)
+        .validateTeacherLogin(teacherUid, email, passcode);
+    }
+    
+    /**
+     * Handle login success
+     */
+    function handleLoginSuccess(result) {
+      const loginBtn = document.getElementById('loginBtn');
+      
+      if (result.success) {
+        showAlert('登入成功！正在進入系統...', 'success');
+        
+        // Redirect to dashboard after 1 second
+        setTimeout(function() {
+          window.location.href = '?page=dashboard';
+        }, 1000);
+      } else {
+        loginBtn.disabled = false;
+        loginBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> 登入';
+        showAlert('登入失敗：' + result.error, 'error');
+      }
+    }
+    
+    /**
+     * Handle login error
+     */
+    function handleLoginError(error) {
+      const loginBtn = document.getElementById('loginBtn');
+      loginBtn.disabled = false;
+      loginBtn.innerHTML = '<i class="fas fa-sign-in-alt"></i> 登入';
+      showAlert('登入發生錯誤：' + error, 'error');
+    }
+    
+    /**
+     * Show alert message
+     */
+    function showAlert(message, type) {
+      const container = document.getElementById('alertContainer');
+      container.innerHTML = `
+        <div class="alert alert-${type}">
+          <i class="fas fa-${type === 'error' ? 'exclamation-circle' : type === 'success' ? 'check-circle' : 'info-circle'}"></i>
+          ${message}
+        </div>
+      `;
+    }
+    
+    /**
+     * Hide alert message
+     */
+    function hideAlert() {
+      document.getElementById('alertContainer').innerHTML = '';
+    }
+    
+    /**
+     * Start sync process
+     */
+    function startSync() {
+      const syncBtn = document.getElementById('syncBtn');
+      const syncLog = document.getElementById('syncLog');
+      
+      // Disable button
+      syncBtn.disabled = true;
+      syncBtn.innerHTML = '<span class="loading-spinner"></span> 同步中...';
+      
+      // Show log
+      syncLog.classList.add('active');
+      syncLog.innerHTML = '';
+      
+      addLog('開始同步校務系統資料...', 'info');
+      showAlert('正在同步資料，請稍候...', 'info');
+      
+      // Call sync function
+      google.script.run
+        .withSuccessHandler(handleSyncSuccess)
+        .withFailureHandler(handleSyncError)
+        .syncFromSchoolApi();
+    }
+    
+    /**
+     * Handle sync success
+     */
+    function handleSyncSuccess(result) {
+      const syncBtn = document.getElementById('syncBtn');
+      
+      if (result.success) {
+        addLog('✓ 同步成功！', 'success');
+        addLog(`教師資料：${result.teachers || 0} 筆`, 'success');
+        addLog(`班級資料：${result.classes || 0} 班`, 'success');
+        addLog(`學生資料：${result.students || 0} 筆`, 'success');
+        
+        showAlert('資料同步完成！正在重新載入...', 'success');
+        
+        // Reload teachers list after 2 seconds
+        setTimeout(function() {
+          syncBtn.disabled = false;
+          syncBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 開始同步資料';
+          loadTeachers();
+        }, 2000);
+      } else {
+        addLog('✗ 同步失敗：' + result.message, 'error');
+        showAlert('同步失敗：' + result.message, 'error');
+        syncBtn.disabled = false;
+        syncBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 重試同步';
+      }
+    }
+    
+    /**
+     * Handle sync error
+     */
+    function handleSyncError(error) {
+      const syncBtn = document.getElementById('syncBtn');
+      
+      addLog('✗ 發生錯誤：' + error, 'error');
+      showAlert('同步發生錯誤：' + error, 'error');
+      
+      syncBtn.disabled = false;
+      syncBtn.innerHTML = '<i class="fas fa-sync-alt"></i> 重試同步';
+    }
+    
+    /**
+     * Add log entry
+     */
+    function addLog(message, type = 'info') {
+      const logContainer = document.getElementById('syncLog');
+      const timestamp = new Date().toLocaleTimeString('zh-TW', { hour12: false });
+      
+      const logClass = type === 'success' ? 'log-success' : 
+                       type === 'error' ? 'log-error' : 'log-info';
+      
+      const logEntry = document.createElement('div');
+      logEntry.className = 'log-entry';
+      logEntry.innerHTML = `<span style="color: #808080;">[${timestamp}]</span> <span class="${logClass}">${message}</span>`;
+      
+      logContainer.appendChild(logEntry);
+      logContainer.scrollTop = logContainer.scrollHeight;
+    }
+  </script>
+</body>
+</html>
+

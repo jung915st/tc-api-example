@@ -185,7 +185,7 @@
             資料同步管理
           </h1>
           <p class="text-muted" style="margin-top: 5px; font-size: 14px;">
-            從 tc-api 同步教師、班級與學生資料
+            使用 OAuth 2.0 從臺中市校務系統同步教師、班級與學生資料
           </p>
         </div>
       </div>
@@ -196,14 +196,18 @@
       <div class="card-header">
         <h2 class="card-title">
           <i class="fas fa-cog"></i>
-          tc-api 連線設定
+          OAuth 2.0 連線設定
         </h2>
       </div>
       <div class="card-body">
         <div class="config-section">
           <div class="config-item">
-            <div class="config-label">API 位址：</div>
-            <div class="config-value" id="apiUrl">載入中...</div>
+            <div class="config-label">OAuth Token URL：</div>
+            <div class="config-value" id="oauthTokenUrl">載入中...</div>
+          </div>
+          <div class="config-item">
+            <div class="config-label">校務 API 位址：</div>
+            <div class="config-value" id="schoolApiUrl">載入中...</div>
           </div>
           <div class="config-item">
             <div class="config-label">上次同步時間：</div>
@@ -301,8 +305,8 @@
         <div class="alert alert-info">
           <i class="fas fa-info-circle"></i>
           <span>
-            <strong>注意事項：</strong>
-            同步過程會從 tc-api 伺服器取得最新資料，並更新本地試算表。
+            <strong>同步方式：</strong>
+            使用 OAuth 2.0 Client Credentials 流程，直接連接臺中市校務系統 API 取得學期資料。
             同步期間請勿關閉此頁面。
           </span>
         </div>
@@ -329,11 +333,11 @@
       </div>
       <div class="card-body">
         <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">
-          什麼是 tc-api？
+          什麼是 OAuth 2.0 同步？
         </h3>
         <p style="margin-bottom: 15px; line-height: 1.6;">
-          tc-api 是校務系統 API 整合服務，提供教師、班級、學生等資料的統一存取介面。
-          本系統透過 tc-api 取得最新的校務資料，確保資料的即時性與正確性。
+          本系統使用 OAuth 2.0 Client Credentials 流程，直接連接臺中市校務系統 API (`https://api.cloudschool.tw`)。
+          透過安全的 OAuth 認證機制取得 access token，然後呼叫 `/semester-data` 端點取得學期資料，包含教師、班級與學生等完整資訊。
         </p>
         
         <h3 style="font-size: 16px; font-weight: 600; margin-bottom: 10px;">
@@ -350,10 +354,11 @@
           故障排除
         </h3>
         <ul style="margin-bottom: 0; padding-left: 20px; line-height: 1.8;">
-          <li>確認 tc-api 伺服器是否正常運作</li>
-          <li>檢查 Config.gs 中的 API 位址設定</li>
-          <li>確認網路連線狀態</li>
-          <li>如果同步失敗，請稍後重試</li>
+          <li><strong>OAuth Token 取得失敗</strong>：檢查 Config.gs 中的 OAUTH 設定（CLIENT_ID、CLIENT_SECRET、TOKEN_URL）</li>
+          <li><strong>API 呼叫失敗</strong>：確認 SCHOOL_API_URL 設定正確</li>
+          <li><strong>資料同步失敗</strong>：查看 GAS 執行記錄（編輯器 → View → Logs）取得詳細錯誤訊息</li>
+          <li>確認網路連線狀態正常</li>
+          <li>如果同步持續失敗，請稍後重試或聯絡系統管理員</li>
         </ul>
       </div>
     </div>
@@ -373,11 +378,18 @@
     function loadSystemStatus() {
       google.script.run
         .withSuccessHandler(function(status) {
-          document.getElementById('apiUrl').textContent = status.apiUrl || 'http://localhost:3001/api';
+          // Display API URLs from Config
+          document.getElementById('oauthTokenUrl').textContent = status.oauthTokenUrl || '未設定';
+          document.getElementById('schoolApiUrl').textContent = status.schoolApiUrl || '未設定';
           document.getElementById('lastSync').textContent = status.lastSync || '從未同步';
+          
+          // Log to console for debugging
+          console.log('System Status:', status);
         })
         .withFailureHandler(function(error) {
           console.error('載入系統狀態失敗:', error);
+          document.getElementById('oauthTokenUrl').textContent = '載入失敗';
+          document.getElementById('schoolApiUrl').textContent = '載入失敗';
         })
         .getSystemStatus();
     }
@@ -430,7 +442,7 @@
         return;
       }
       
-      if (!confirmAction('確定要開始同步資料嗎？\n\n這將從 tc-api 伺服器取得最新資料並更新本地試算表。')) {
+      if (!confirmAction('確定要開始同步資料嗎？\n\n這將使用 OAuth 2.0 從臺中市校務系統取得最新資料並更新本地試算表。')) {
         return;
       }
       
@@ -449,7 +461,7 @@
       logContainer.innerHTML = '';
       
       // Add initial log
-      addLog('開始同步作業...', 'info');
+      addLog('開始 OAuth 2.0 同步作業...', 'info');
       
       // Update status badges
       updateStatusBadge('teacherStatus', 'warning', '同步中...');
@@ -460,7 +472,7 @@
       google.script.run
         .withSuccessHandler(onSyncComplete)
         .withFailureHandler(onSyncError)
-        .syncFromTcApi();
+        .syncFromSchoolApi();
     }
     
     /**
@@ -475,7 +487,12 @@
       
       if (result.success) {
         addLog('同步完成！', 'success');
+        
+        if (result.學年 && result.學期) {
+          addLog(`學年: ${result.學年} 學期: ${result.學期}`, 'success');
+        }
         addLog(`教師資料：${result.teachers || 0} 筆`, 'success');
+        addLog(`班級資料：${result.classes || 0} 班`, 'success');
         addLog(`學生資料：${result.students || 0} 筆`, 'success');
         
         updateStatusBadge('teacherStatus', 'success', '同步成功');
@@ -484,7 +501,7 @@
         
         showSuccess('資料同步完成！');
         
-        // Reload counts
+        // Reload counts and status
         setTimeout(loadDataCounts, 1000);
         setTimeout(loadSystemStatus, 1000);
       } else {
@@ -552,7 +569,7 @@
      */
     function getSystemStatus() {
       return {
-        apiUrl: 'http://localhost:3001/api',
+        apiUrl: 'https://api.cloudschool.tw',
         lastSync: '從未同步'
       };
     }

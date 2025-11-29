@@ -17,11 +17,21 @@ function doGet(e) {
   try {
     const user = getCurrentUser();
     
+    // Check login page
+    const page = e.parameter.page || 'dashboard';
+    
+    if (page === 'login') {
+      return renderLogin();
+    }
+    
+    // Check if user is logged in
+    if (!user.isLoggedIn && CONFIG.SECURITY.ENABLE_AUTH) {
+      return renderLogin();
+    }
+    
     if (!user.hasPermission && CONFIG.SECURITY.ENABLE_AUTH) {
       return renderUnauthorized();
     }
-    
-    const page = e.parameter.page || 'dashboard';
     
     switch (page) {
       case 'dashboard':
@@ -50,6 +60,25 @@ function doGet(e) {
  */
 function doPost(e) {
   try {
+    const postData = JSON.parse(e.postData.contents);
+    const action = postData.action;
+    
+    let result;
+    
+    // Login action doesn't need authentication
+    if (action === 'teacherLogin') {
+      result = validateTeacherLogin(postData.teacherUid, postData.email, postData.passcode);
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    if (action === 'teacherLogout') {
+      result = logoutTeacher();
+      return ContentService.createTextOutput(JSON.stringify(result))
+        .setMimeType(ContentService.MimeType.JSON);
+    }
+    
+    // All other actions require authentication
     const user = getCurrentUser();
     
     if (!user.hasPermission && CONFIG.SECURITY.ENABLE_AUTH) {
@@ -58,11 +87,6 @@ function doPost(e) {
         error: '無權限'
       })).setMimeType(ContentService.MimeType.JSON);
     }
-    
-    const postData = JSON.parse(e.postData.contents);
-    const action = postData.action;
-    
-    let result;
     
     switch (action) {
       case 'addAttendance':
@@ -74,10 +98,7 @@ function doPost(e) {
       case 'approveLeave':
         result = handleApproveLeave(postData.data);
         break;
-      case 'syncTcApi':
-        result = syncFromTcApi();
-        break;
-      case 'syncSchoolApi':  // NEW: Direct OAuth sync
+      case 'syncSchoolApi':
         result = syncFromSchoolApi();
         break;
       default:
@@ -99,11 +120,28 @@ function doPost(e) {
 // ==================== Page Rendering Functions ====================
 
 /**
+ * Render Login page
+ */
+function renderLogin() {
+  const template = HtmlService.createTemplateFromFile('Login_v1.2.0');
+  template.version = getVersion();
+  
+  return template.evaluate()
+    .setTitle(CONFIG.WEB_APP.TITLE + ' - 教師登入')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+/**
  * Render Dashboard page
  */
 function renderDashboard(user) {
   const template = HtmlService.createTemplateFromFile('Dashboard_v1.1.0');
   template.userEmail = user.email;
+  template.userName = user.name || user.email;
+  template.userTitle = user.title || '';
+  template.userOffice = user.office || '';
+  template.isLoggedIn = user.isLoggedIn || false;
   template.version = getVersion();
   template.teacherInfo = getTeacherInfo();
   
@@ -767,16 +805,79 @@ function include(filename) {
  * Get system status
  */
 function getSystemStatus() {
-  return {
-    version: getVersion(),
-    buildDate: VERSION.BUILD_DATE,
-    timezone: TIMEZONE_CONFIG.TIMEZONE,
-    currentTime: formatDateTimeUTC8(getCurrentTime(), 'full'),
-    userEmail: Session.getActiveUser().getEmail(),
-    lastTcApiSync: getSettingValue('last_tc_api_sync') || 'Never',
-    lastSchoolApiSync: getSettingValue('last_school_api_sync') || 'Never'
-  };
+  try {
+    // Parse last sync info if it's JSON
+    let lastSchoolApiSync = getSettingValue('last_school_api_sync') || '從未同步';
+    
+    // Try to parse school API sync info (contains metadata)
+    try {
+      const schoolSyncData = JSON.parse(lastSchoolApiSync);
+      if (schoolSyncData.time) {
+        lastSchoolApiSync = `${schoolSyncData.time} (學年: ${schoolSyncData.學年}, 學期: ${schoolSyncData.學期})`;
+      }
+    } catch (e) {
+      // Not JSON, use as is
+    }
+    
+    return {
+      version: getVersion(),
+      buildDate: VERSION.BUILD_DATE,
+      timezone: TIMEZONE_CONFIG.TIMEZONE,
+      currentTime: formatDateTimeUTC8(getCurrentTime(), 'full'),
+      userEmail: Session.getActiveUser().getEmail(),
+      oauthTokenUrl: CONFIG.OAUTH ? CONFIG.OAUTH.TOKEN_URL : null,
+      schoolApiUrl: CONFIG.OAUTH ? CONFIG.OAUTH.SCHOOL_API_URL : null,
+      lastSync: lastSchoolApiSync
+    };
+  } catch (error) {
+    Logger.log(`Get system status error: ${error}`);
+    return {
+      version: getVersion(),
+      error: error.toString()
+    };
+  }
 }
+
+/**
+ * Get data counts for sync page
+ */
+function getDataCounts() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // Get teachers count
+    const teachersSheet = ss.getSheetByName(CONFIG.SHEET_NAMES.TEACHERS);
+    const teachersCount = teachersSheet && teachersSheet.getLastRow() > 1 ? 
+                          teachersSheet.getLastRow() - 1 : 0;
+    
+    // Get classes count
+    const classesSheet = ss.getSheetByName(CONFIG.SHEET_NAMES.CLASSES);
+    const classesCount = classesSheet && classesSheet.getLastRow() > 1 ? 
+                         classesSheet.getLastRow() - 1 : 0;
+    
+    // Get students count
+    const studentsSheet = ss.getSheetByName(CONFIG.SHEET_NAMES.CLASS_STUDENTS);
+    const studentsCount = studentsSheet && studentsSheet.getLastRow() > 1 ? 
+                          studentsSheet.getLastRow() - 1 : 0;
+    
+    return {
+      teachers: teachersCount,
+      classes: classesCount,
+      students: studentsCount
+    };
+  } catch (error) {
+    Logger.log(`Get data counts error: ${error}`);
+    return {
+      teachers: 0,
+      classes: 0,
+      students: 0,
+      error: error.toString()
+    };
+  }
+}
+
+// Note: getTeachersForLogin(), validateTeacherLogin(), and logoutTeacher() 
+// are defined in Config_v1.2.0.gs and are directly accessible to the frontend
 
 // ==================== Helper functions for dashboard ====================
 

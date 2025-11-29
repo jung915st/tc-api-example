@@ -122,7 +122,12 @@
       
       <div class="navbar-user">
         <i class="fas fa-user-circle"></i>
-        <span><?= teacherInfo.name ?></span>
+        <span id="userDisplayName"><?= userName || teacherInfo.name ?></span>
+        <? if (isLoggedIn) { ?>
+        <button class="btn btn-sm" onclick="handleLogout()" style="margin-left: 10px; padding: 5px 12px; background: #dc3545; color: white; border: none; border-radius: 6px; cursor: pointer;">
+          <i class="fas fa-sign-out-alt"></i> 登出
+        </button>
+        <? } ?>
       </div>
     </div>
   </nav>
@@ -696,6 +701,31 @@
       if (element) {
         element.textContent = timeString;
       }
+    }
+    
+    /**
+     * 處理登出
+     */
+    function handleLogout() {
+      if (!confirmAction('確定要登出嗎？')) {
+        return;
+      }
+      
+      google.script.run
+        .withSuccessHandler(function(result) {
+          if (result.success) {
+            showSuccess('登出成功！正在跳轉...');
+            setTimeout(function() {
+              window.location.href = '?page=login';
+            }, 1000);
+          } else {
+            alert('登出失敗：' + (result.error || '未知錯誤'));
+          }
+        })
+        .withFailureHandler(function(error) {
+          alert('登出發生錯誤：' + error);
+        })
+        .logoutTeacher();
     }
   </script>
   

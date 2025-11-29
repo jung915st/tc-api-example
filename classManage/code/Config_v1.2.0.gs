@@ -87,23 +87,7 @@ const CONFIG = {
     CLASS: '一年一班'
   },
   
-  // tc-api Integration Settings
-  TC_API: {
-    BASE_URL: 'http://localhost:3001/api',  // Change to your tc-api server URL
-    ENDPOINTS: {
-      SYNC: '/sync-school',
-      STUDENTS: '/students',
-      TEACHERS: '/teachers',
-      CLASSES: '/classes',
-      SEMESTER_DATA: '/semester-data'
-    },
-    SYNC_INTERVAL: 3600000,  // 1 hour in milliseconds
-    CACHE_DURATION: 1800,     // 30 minutes in seconds
-    TIMEOUT: 30000,           // 30 seconds
-    ENABLED: true             // Enable/disable tc-api integration
-  },
-  
-  // OAuth 2.0 Client Credentials Settings (for direct school API access)
+  // OAuth 2.0 Client Credentials Settings (for school API access)
   OAUTH: {
     TOKEN_URL: 'https://api.cloudschool.tw/oauth?authorize',
     CLIENT_ID: 'e881581f5810f8b0efd6607339b72dac',
@@ -168,7 +152,9 @@ const CONFIG = {
     ENABLE_AUTH: true,
     ALLOWED_DOMAINS: ['example.com'],  // Modify this to your school domain
     MAX_LOGIN_ATTEMPTS: 5,
-    SESSION_COOKIE_NAME: 'class_mgmt_session'
+    SESSION_COOKIE_NAME: 'class_mgmt_session',
+    DEFAULT_PASSCODE: '8888',  // Default passcode for testing
+    SESSION_DURATION: 3600000  // 1 hour in milliseconds
   }
 };
 
@@ -234,9 +220,10 @@ const TEACHER_COLS = {
   NAME: 2,
   OFFICE: 3,
   TITLE: 4,
-  IS_HOMEROOM: 5,
-  EMAIL: 6,
-  CLASSES: 7
+  ACCOUNT: 5,
+  GENDER: 6,
+  TEACHING_SUBJECTS: 7,
+  EMAIL: 8
 };
 
 const CLASS_COLS = {
@@ -337,7 +324,7 @@ function callSchoolApi(endpoint, method = 'GET') {
       },
       contentType: 'application/json',
       muteHttpExceptions: true,
-      timeout: CONFIG.TC_API.TIMEOUT
+      timeout: 30000
     };
     
     const response = UrlFetchApp.fetch(url, options);
@@ -351,48 +338,6 @@ function callSchoolApi(endpoint, method = 'GET') {
     }
   } catch (error) {
     Logger.log(`Call school API failed: ${error}`);
-    return { error: error.toString() };
-  }
-}
-
-// ==================== tc-api Integration Functions ====================
-
-/**
- * Call tc-api endpoint (backend proxy)
- * @param {string} endpoint - API endpoint
- * @param {string} method - HTTP method (GET, POST)
- * @param {object} payload - Request payload
- * @return {object} API response
- */
-function callTcApi(endpoint, method = 'GET', payload = null) {
-  if (!CONFIG.TC_API.ENABLED) {
-    return { error: 'tc-api integration is disabled' };
-  }
-  
-  try {
-    const url = CONFIG.TC_API.BASE_URL + endpoint;
-    const options = {
-      method: method,
-      contentType: 'application/json',
-      muteHttpExceptions: true,
-      timeout: CONFIG.TC_API.TIMEOUT
-    };
-    
-    if (payload && method === 'POST') {
-      options.payload = JSON.stringify(payload);
-    }
-    
-    const response = UrlFetchApp.fetch(url, options);
-    const code = response.getResponseCode();
-    
-    if (code >= 200 && code < 300) {
-      return JSON.parse(response.getContentText());
-    } else {
-      Logger.log(`tc-api error: ${code} - ${response.getContentText()}`);
-      return { error: `API錯誤: ${code}`, details: response.getContentText() };
-    }
-  } catch (error) {
-    Logger.log(`tc-api call failed: ${error}`);
     return { error: error.toString() };
   }
 }
@@ -484,60 +429,7 @@ function syncFromSchoolApi() {
 }
 
 /**
- * Sync data from tc-api (backend proxy method)
- * @return {object} Sync result
- */
-function syncFromTcApi() {
-  try {
-    logAction('開始同步 tc-api 資料', '', 'INFO');
-    
-    // Trigger sync in tc-api backend
-    const syncResult = callTcApi(CONFIG.TC_API.ENDPOINTS.SYNC, 'POST');
-    
-    if (syncResult.error) {
-      return { success: false, message: '同步失敗: ' + syncResult.error };
-    }
-    
-    // Fetch teachers data
-    const teachers = callTcApi(CONFIG.TC_API.ENDPOINTS.TEACHERS);
-    if (!teachers.error) {
-      saveTeachersToSheet(teachers);
-    }
-    
-    // Fetch classes data
-    const classes = callTcApi(CONFIG.TC_API.ENDPOINTS.CLASSES);
-    if (!classes.error) {
-      saveClassesToSheet(classes);
-    }
-    
-    // Fetch students data
-    const students = callTcApi(CONFIG.TC_API.ENDPOINTS.STUDENTS);
-    if (!students.error) {
-      saveStudentsToSheet(students);
-    }
-    
-    // Update last sync time
-    updateSettingValue('last_tc_api_sync', getCurrentTime().toString());
-    
-    // Clear cache
-    clearAllCache();
-    
-    logAction('tc-api 資料同步完成', '', 'INFO');
-    
-    return { 
-      success: true, 
-      message: '同步完成',
-      teachers: Array.isArray(teachers) ? teachers.length : 0,
-      students: Array.isArray(students) ? students.length : 0
-    };
-  } catch (error) {
-    Logger.log(`同步失敗: ${error}`);
-    return { success: false, message: error.toString() };
-  }
-}
-
-/**
- * Save teachers data from semester data (direct school API)
+ * Save teachers data from semester data (school API)
  * @param {Array} teachers - Teachers array from school API (學期教職員)
  */
 function saveTeachersFromSemesterData(teachers) {
@@ -545,10 +437,23 @@ function saveTeachersFromSemesterData(teachers) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
     let sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.TEACHERS);
     
+    // Store existing emails before clearing (to preserve them across syncs)
+    const existingEmails = {};
+    if (sheet && sheet.getLastRow() > 1) {
+      const existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).getValues();
+      existingData.forEach(row => {
+        const uid = row[TEACHER_COLS.UID];
+        const email = row[TEACHER_COLS.EMAIL];
+        if (uid && email) {
+          existingEmails[uid] = email;
+        }
+      });
+    }
+    
     if (!sheet) {
       sheet = ss.insertSheet(CONFIG.SHEET_NAMES.TEACHERS);
-      sheet.appendRow(['UID', 'UID2', '姓名', '處室', '職稱', '帳號', '性別', '任教科目']);
-      sheet.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#667eea').setFontColor('white');
+      sheet.appendRow(['UID', 'UID2', '姓名', '處室', '職稱', '帳號', '性別', '任教科目', 'Email']);
+      sheet.getRange(1, 1, 1, 9).setFontWeight('bold').setBackground('#667eea').setFontColor('white');
     } else {
       if (sheet.getLastRow() > 1) {
         sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
@@ -565,20 +470,24 @@ function saveTeachersFromSemesterData(teachers) {
         ).join(', ');
       }
       
+      const uid = t['UID'] || '';
+      const preservedEmail = existingEmails[uid] || '';
+      
       rows.push([
-        t['UID'] || '',
+        uid,
         t['UID2'] || '',
         t['姓名'] || '',
         t['處室'] || '',
         t['職稱'] || '',
         t['帳號'] || '',
         t['性別'] || '',
-        subjectsStr
+        subjectsStr,
+        preservedEmail  // Preserve existing email or empty
       ]);
     });
     
     if (rows.length > 0) {
-      sheet.getRange(2, 1, rows.length, 8).setValues(rows);
+      sheet.getRange(2, 1, rows.length, 9).setValues(rows);
     }
     
     logAction('儲存教師資料', `${rows.length} 筆`, 'INFO');
@@ -588,7 +497,7 @@ function saveTeachersFromSemesterData(teachers) {
 }
 
 /**
- * Save classes data from semester data (direct school API)
+ * Save classes data from semester data (school API)
  * @param {Array} classes - Classes array processed from 學期編班
  */
 function saveClassesFromSemesterData(classes) {
@@ -675,132 +584,6 @@ function saveStudentsFromSemesterData(students) {
 }
 
 /**
- * Save teachers data to sheet (from tc-api)
- * @param {Array} teachers - Teachers array from tc-api
- */
-function saveTeachersToSheet(teachers) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.TEACHERS);
-    
-    if (!sheet) {
-      sheet = ss.insertSheet(CONFIG.SHEET_NAMES.TEACHERS);
-      sheet.appendRow(['UID', 'UID2', '姓名', '處室', '職稱', '是否導師', 'Email', '任教班級']);
-      sheet.getRange(1, 1, 1, 8).setFontWeight('bold').setBackground('#667eea').setFontColor('white');
-    } else {
-      if (sheet.getLastRow() > 1) {
-        sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-      }
-    }
-    
-    const rows = [];
-    teachers.forEach(t => {
-      const classesStr = t.classes ? t.classes.map(c => `${c.grade}-${c.class_seq}`).join(', ') : '';
-      rows.push([
-        t.uid || '',
-        t.uid2 || '',
-        t.name || '',
-        t.office || '',
-        t.title || '',
-        t.isHomeroom ? '是' : '否',
-        t.email || '',
-        classesStr
-      ]);
-    });
-    
-    if (rows.length > 0) {
-      sheet.getRange(2, 1, rows.length, 8).setValues(rows);
-    }
-    
-    logAction('儲存教師資料', `${rows.length} 筆`, 'INFO');
-  } catch (error) {
-    Logger.log(`儲存教師資料失敗: ${error}`);
-  }
-}
-
-/**
- * Save classes data to sheet
- * @param {object} classesData - Classes data from tc-api
- */
-function saveClassesToSheet(classesData) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.CLASSES);
-    
-    if (!sheet) {
-      sheet = ss.insertSheet(CONFIG.SHEET_NAMES.CLASSES);
-      sheet.appendRow(['年級', '班序', '班名']);
-      sheet.getRange(1, 1, 1, 3).setFontWeight('bold').setBackground('#667eea').setFontColor('white');
-    } else {
-      if (sheet.getLastRow() > 1) {
-        sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-      }
-    }
-    
-    const rows = [];
-    const grades = classesData.grades || [];
-    const classes = classesData.classes || {};
-    
-    grades.forEach(grade => {
-      const classList = classes[grade] || [];
-      classList.forEach(c => {
-        rows.push([grade, c.班序, c.班名]);
-      });
-    });
-    
-    if (rows.length > 0) {
-      sheet.getRange(2, 1, rows.length, 3).setValues(rows);
-    }
-    
-    logAction('儲存班級資料', `${rows.length} 筆`, 'INFO');
-  } catch (error) {
-    Logger.log(`儲存班級資料失敗: ${error}`);
-  }
-}
-
-/**
- * Save students data to sheet
- * @param {Array} students - Students array from tc-api
- */
-function saveStudentsToSheet(students) {
-  try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
-    let sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.CLASS_STUDENTS);
-    
-    if (!sheet) {
-      sheet = ss.insertSheet(CONFIG.SHEET_NAMES.CLASS_STUDENTS);
-      sheet.appendRow(['學號', '姓名', '性別', '年級', '班名', '班序', '座號']);
-      sheet.getRange(1, 1, 1, 7).setFontWeight('bold').setBackground('#667eea').setFontColor('white');
-    } else {
-      if (sheet.getLastRow() > 1) {
-        sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
-      }
-    }
-    
-    const rows = [];
-    students.forEach(s => {
-      rows.push([
-        s.student_no || '',
-        s.name || '',
-        s.gender || '',
-        s.grade || '',
-        s.class_name || '',
-        s.class_seq || '',
-        s.seat_no || ''
-      ]);
-    });
-    
-    if (rows.length > 0) {
-      sheet.getRange(2, 1, rows.length, 7).setValues(rows);
-    }
-    
-    logAction('儲存學生資料', `${rows.length} 筆`, 'INFO');
-  } catch (error) {
-    Logger.log(`儲存學生資料失敗: ${error}`);
-  }
-}
-
-/**
  * Get teachers list from sheet
  * @return {Array} Teachers array
  */
@@ -816,19 +599,20 @@ function getTeachersList() {
       return [];
     }
     
-    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 8).getValues();
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues();
     const teachers = data.map(row => ({
-      uid: row[0],
-      uid2: row[1],
-      name: row[2],
-      office: row[3],
-      title: row[4],
-      isHomeroom: row[5] === '是',
-      email: row[6],
-      classes: row[7]
+      uid: row[TEACHER_COLS.UID],
+      uid2: row[TEACHER_COLS.UID2],
+      name: row[TEACHER_COLS.NAME],
+      office: row[TEACHER_COLS.OFFICE],
+      title: row[TEACHER_COLS.TITLE],
+      account: row[TEACHER_COLS.ACCOUNT],
+      gender: row[TEACHER_COLS.GENDER],
+      teachingSubjects: row[TEACHER_COLS.TEACHING_SUBJECTS],
+      email: row[TEACHER_COLS.EMAIL]
     })).filter(t => t.name);
     
-    setCache('teachers_list', teachers, CONFIG.TC_API.CACHE_DURATION);
+    setCache('teachers_list', teachers, CACHE_CONFIG.DURATION.MEDIUM);
     return teachers;
   } catch (error) {
     Logger.log(`取得教師清單失敗: ${error}`);
@@ -865,7 +649,7 @@ function getClassesList(grade = null) {
       classes = classes.filter(c => c.grade == grade);
     }
     
-    setCache(cacheKey, classes, CONFIG.TC_API.CACHE_DURATION);
+    setCache(cacheKey, classes, CACHE_CONFIG.DURATION.MEDIUM);
     return classes;
   } catch (error) {
     Logger.log(`取得班級清單失敗: ${error}`);
@@ -904,7 +688,7 @@ function getStudentsByClass(grade, classSeq) {
         seat_no: row[6]
       }));
     
-    setCache(cacheKey, students, CONFIG.TC_API.CACHE_DURATION);
+    setCache(cacheKey, students, CACHE_CONFIG.DURATION.MEDIUM);
     return students;
   } catch (error) {
     Logger.log(`取得班級學生失敗: ${error}`);
@@ -994,12 +778,292 @@ function getTeacherInfo() {
 // ==================== Security Functions ====================
 
 /**
+ * Get all teachers for login selection
+ * @return {Array} Array of teacher objects with name, uid, email, and teaching info
+ */
+function getTeachersForLogin() {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.TEACHERS);
+    
+    if (!sheet || sheet.getLastRow() < 2) {
+      return [];
+    }
+    
+    const data = sheet.getRange(2, 1, sheet.getLastRow() - 1, 9).getValues();
+    const teachers = data.map(row => {
+      // Parse teaching subjects to extract classes
+      const teachingSubjects = row[TEACHER_COLS.TEACHING_SUBJECTS]; // 任教科目 column
+      let teachingClasses = [];
+      let subjects = [];
+      
+      if (teachingSubjects) {
+        // Parse format like "2-5:本土語文(1), 2-6:本土語文(1)"
+        const parts = teachingSubjects.split(',').map(p => p.trim());
+        parts.forEach(part => {
+          const match = part.match(/(\d+)-(\d+):(.+)\((\d+)\)/);
+          if (match) {
+            const grade = match[1];
+            const classSeq = match[2];
+            const subject = match[3];
+            const hours = match[4];
+            
+            teachingClasses.push({
+              grade: parseInt(grade),
+              classSeq: parseInt(classSeq),
+              className: `${grade}年${classSeq}班`
+            });
+            
+            if (!subjects.includes(subject)) {
+              subjects.push(subject);
+            }
+          }
+        });
+      }
+      
+      // Remove duplicate classes
+      const uniqueClasses = [];
+      const classKeys = new Set();
+      teachingClasses.forEach(c => {
+        const key = `${c.grade}-${c.classSeq}`;
+        if (!classKeys.has(key)) {
+          classKeys.add(key);
+          uniqueClasses.push(c);
+        }
+      });
+      
+      return {
+        uid: row[TEACHER_COLS.UID],
+        uid2: row[TEACHER_COLS.UID2],
+        name: row[TEACHER_COLS.NAME],
+        office: row[TEACHER_COLS.OFFICE],
+        title: row[TEACHER_COLS.TITLE],
+        account: row[TEACHER_COLS.ACCOUNT],
+        gender: row[TEACHER_COLS.GENDER],
+        email: row[TEACHER_COLS.EMAIL],
+        teachingClasses: uniqueClasses,
+        subjects: subjects,
+        displayInfo: uniqueClasses.length > 0 ? 
+          `${row[TEACHER_COLS.NAME]} (${uniqueClasses.map(c => c.className).join(', ')})` : 
+          `${row[TEACHER_COLS.NAME]} (${row[TEACHER_COLS.OFFICE]} - ${row[TEACHER_COLS.TITLE]})`
+      };
+    }).filter(t => t.name);
+    
+    return teachers;
+  } catch (error) {
+    Logger.log(`取得教師登入清單失敗: ${error}`);
+    return [];
+  }
+}
+
+/**
+ * Validate teacher login
+ * @param {string} teacherUid - Teacher UID
+ * @param {string} email - Email input
+ * @param {string} passcode - Passcode input
+ * @return {object} Login result with teacher info or error
+ */
+function validateTeacherLogin(teacherUid, email, passcode) {
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(CONFIG.SHEET_NAMES.TEACHERS);
+    
+    if (!sheet) {
+      return { success: false, error: '找不到教師資料表' };
+    }
+    
+    // Find teacher by UID
+    const data = sheet.getDataRange().getValues();
+    let teacherRow = null;
+    let rowIndex = -1;
+    
+    for (let i = 1; i < data.length; i++) {
+      if (data[i][TEACHER_COLS.UID] == teacherUid || data[i][TEACHER_COLS.UID2] == teacherUid) {
+        teacherRow = data[i];
+        rowIndex = i;
+        break;
+      }
+    }
+    
+    if (!teacherRow) {
+      return { success: false, error: '找不到教師資料' };
+    }
+    
+    // Check passcode
+    if (passcode !== CONFIG.SECURITY.DEFAULT_PASSCODE) {
+      return { success: false, error: '密碼錯誤' };
+    }
+    
+    // Get stored email from the EMAIL column (index 8)
+    const storedEmail = teacherRow[TEACHER_COLS.EMAIL];
+    
+    // If no stored email, this is first login - store the email
+    if (!storedEmail || storedEmail === '') {
+      // Update email in spreadsheet
+      sheet.getRange(rowIndex + 1, TEACHER_COLS.EMAIL + 1).setValue(email);
+      logAction('教師首次登入', `UID: ${teacherUid}, Email: ${email}`, 'INFO');
+    } else {
+      // Verify email matches
+      if (storedEmail !== email) {
+        return { success: false, error: 'Email 不正確' };
+      }
+    }
+    
+    // Parse teaching info
+    const teachingSubjects = teacherRow[TEACHER_COLS.TEACHING_SUBJECTS];
+    let teachingClasses = [];
+    let subjects = [];
+    
+    if (teachingSubjects) {
+      const parts = teachingSubjects.split(',').map(p => p.trim());
+      parts.forEach(part => {
+        const match = part.match(/(\d+)-(\d+):(.+)\((\d+)\)/);
+        if (match) {
+          const grade = match[1];
+          const classSeq = match[2];
+          const subject = match[3];
+          
+          teachingClasses.push({
+            grade: parseInt(grade),
+            classSeq: parseInt(classSeq),
+            className: `${grade}年${classSeq}班`
+          });
+          
+          if (!subjects.includes(subject)) {
+            subjects.push(subject);
+          }
+        }
+      });
+    }
+    
+    // Remove duplicate classes
+    const uniqueClasses = [];
+    const classKeys = new Set();
+    teachingClasses.forEach(c => {
+      const key = `${c.grade}-${c.classSeq}`;
+      if (!classKeys.has(key)) {
+        classKeys.add(key);
+        uniqueClasses.push(c);
+      }
+    });
+    
+    // Create session
+    const sessionId = Utilities.getUuid();
+    const sessionData = {
+      sessionId: sessionId,
+      uid: teacherRow[TEACHER_COLS.UID],
+      uid2: teacherRow[TEACHER_COLS.UID2],
+      name: teacherRow[TEACHER_COLS.NAME],
+      office: teacherRow[TEACHER_COLS.OFFICE],
+      title: teacherRow[TEACHER_COLS.TITLE],
+      email: email,
+      gender: teacherRow[TEACHER_COLS.GENDER],
+      teachingClasses: uniqueClasses,
+      subjects: subjects,
+      loginTime: getCurrentTime().toString(),
+      expiresAt: Date.now() + CONFIG.SECURITY.SESSION_DURATION
+    };
+    
+    // Store session in cache
+    setCache(`session_${sessionId}`, sessionData, CONFIG.SECURITY.SESSION_DURATION / 1000);
+    
+    // Store session in user properties for persistence
+    const userProps = PropertiesService.getUserProperties();
+    userProps.setProperty('current_session', sessionId);
+    userProps.setProperty('session_data', JSON.stringify(sessionData));
+    
+    logAction('教師登入成功', `${teacherRow[TEACHER_COLS.NAME]} (${teacherRow[TEACHER_COLS.UID]})`, 'INFO');
+    
+    return {
+      success: true,
+      session: sessionData
+    };
+  } catch (error) {
+    Logger.log(`教師登入驗證失敗: ${error}`);
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
+ * Get current logged-in teacher session
+ * @return {object} Session data or null
+ */
+function getCurrentTeacherSession() {
+  try {
+    const userProps = PropertiesService.getUserProperties();
+    const sessionId = userProps.getProperty('current_session');
+    
+    if (!sessionId) {
+      return null;
+    }
+    
+    // Try cache first
+    let sessionData = getCache(`session_${sessionId}`);
+    
+    // If not in cache, get from user properties
+    if (!sessionData) {
+      const storedData = userProps.getProperty('session_data');
+      if (storedData) {
+        sessionData = JSON.parse(storedData);
+      }
+    }
+    
+    if (!sessionData) {
+      return null;
+    }
+    
+    // Check if session expired
+    if (sessionData.expiresAt && sessionData.expiresAt < Date.now()) {
+      logoutTeacher();
+      return null;
+    }
+    
+    return sessionData;
+  } catch (error) {
+    Logger.log(`取得教師 session 失敗: ${error}`);
+    return null;
+  }
+}
+
+/**
+ * Logout teacher
+ */
+function logoutTeacher() {
+  try {
+    const userProps = PropertiesService.getUserProperties();
+    const sessionId = userProps.getProperty('current_session');
+    
+    if (sessionId) {
+      // Clear cache
+      clearCache(`session_${sessionId}`);
+    }
+    
+    // Clear user properties
+    userProps.deleteProperty('current_session');
+    userProps.deleteProperty('session_data');
+    
+    logAction('教師登出', '', 'INFO');
+    
+    return { success: true };
+  } catch (error) {
+    Logger.log(`教師登出失敗: ${error}`);
+    return { success: false, error: error.toString() };
+  }
+}
+
+/**
  * Verify user permission
  * @param {string} userEmail - User Email
  * @return {boolean} Has permission
  */
 function verifyUserPermission(userEmail) {
   if (!CONFIG.SECURITY.ENABLE_AUTH) {
+    return true;
+  }
+  
+  // Check if teacher is logged in via session
+  const session = getCurrentTeacherSession();
+  if (session && session.email) {
     return true;
   }
   
@@ -1020,12 +1084,32 @@ function verifyUserPermission(userEmail) {
  * Get current user information
  */
 function getCurrentUser() {
+  // Check if teacher is logged in
+  const session = getCurrentTeacherSession();
+  
+  if (session) {
+    return {
+      email: session.email,
+      name: session.name,
+      uid: session.uid,
+      office: session.office,
+      title: session.title,
+      teachingClasses: session.teachingClasses,
+      subjects: session.subjects,
+      hasPermission: true,
+      isLoggedIn: true,
+      timestamp: getCurrentTime()
+    };
+  }
+  
+  // Fallback to old method
   const userEmail = Session.getActiveUser().getEmail();
   const hasPermission = verifyUserPermission(userEmail);
   
   return {
     email: userEmail,
     hasPermission: hasPermission,
+    isLoggedIn: false,
     timestamp: getCurrentTime()
   };
 }
