@@ -1092,25 +1092,77 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     </details>
 
     ---
-    ### **步驟 5：模組 C - Mistral AI > Make an API Call (推薦方法)**
+    ### **步驟 5：模組 C - Mistral AI > Create Chat Completion**
     
-    Make.com 提供原生 Mistral AI 模組！使用 **Make an API Call** 動作可以自動處理認證，同時保留完整的 API 控制權。
+    使用 Mistral AI 的 **Chat Completion** 功能來分析圖片內容。
     
-    **參考文件：** [Make.com Mistral AI Documentation](https://apps.make.com/mistral-ai)
+    **參考文件：** 
+    - [Mistral AI Chat Completion API](https://docs.mistral.ai/api/endpoint/chat)
+    - [Make.com Mistral AI Documentation](https://apps.make.com/mistral-ai)
     
-    **【重要】** 必須使用 **Pixtral 視覺模型**，不能用 `mistral-large-latest`！
+    **【重要】** 必須使用 **Pixtral 視覺模型**才能處理圖片！
+    - ✅ `pixtral-12b-2409` - 基礎視覺模型
+    - ✅ `pixtral-large-latest` - 進階視覺模型
+    - ❌ `mistral-large-latest` - 不支援圖片
+    
+    ---
+    
+    #### **方法 A：使用原生 Mistral AI 模組 (推薦)**
     
     **首次使用需建立 Connection：**
     1. 點擊 Connection 旁的 `Add` 按鈕
     2. 為連結命名 (例如：「我的 Mistral AI」)
-    3. 輸入您的 Mistral AI API Key
+    3. 輸入您的 Mistral AI API Key (從 [console.mistral.ai](https://console.mistral.ai) 取得)
     4. 點擊 Save
     
-    **【注意】** 根據 Make.com 文件，Mistral AI 需要**付費訂閱**才能使用。
+    **模組設定：Mistral AI > Create Chat Completion**
     
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **Connection** | 選擇或建立您的 Mistral AI 連結 |
+    | **Connection** | 選擇您的 Mistral AI 連結 |
+    | **Model** | `pixtral-12b-2409` |
+    | **Messages** | 點擊 `Add item` 新增訊息 |
+    
+    **Messages 設定：**
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Role** | `User` |
+    | **Content Type** | 選擇 `Content Parts` (支援多媒體) |
+    
+    **Content Parts (點擊 Add item 兩次)：**
+    
+    **Part 1 - 文字提示：**
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Type** | `Text` |
+    | **Text** | `請描述這張圖片的內容，並辨識圖片中的所有文字。如果有文字，請列出所有文字內容。` |
+    
+    **Part 2 - 圖片 URL：**
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Type** | `Image URL` |
+    | **Image URL** | `{{4.url}}` (來自 ImgBB 模組的圖片網址) |
+    
+    **其他可選設定：**
+    
+    | 設定項目 | 設定值 | 說明 |
+    |---------|--------|------|
+    | **Max Tokens** | `1024` | 最大回覆長度 |
+    | **Temperature** | `0.3` | 較低值 = 更精確 (建議 0.0-0.7) |
+    
+    **輸出變數 (用於下一步)：**
+    - `{{5.choices[].message.content}}` - AI 回覆的圖片描述/文字辨識結果 ⭐
+    
+    ---
+    
+    #### **方法 B：使用 Make an API Call (完整控制)**
+    
+    如果原生模組不支援 Content Parts，可改用 API Call：
+    
+    | 設定項目 | 設定值 |
+    |---------|--------|
+    | **Connection** | 選擇您的 Mistral AI 連結 |
     | **URL** | `/v1/chat/completions` |
     | **Method** | `POST` |
     
@@ -1125,42 +1177,33 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
           "content": [
             {
               "type": "text",
-              "text": "請辨識這張圖片中的所有文字，並僅回傳文字內容，不要包含任何額外的說明或開場白。如果圖片中沒有文字，請回覆「圖片中未偵測到文字」。"
+              "text": "請描述這張圖片的內容，並辨識圖片中的所有文字。如果有文字，請列出所有文字內容。"
             },
             {
               "type": "image_url",
-              "image_url": {
-                "url": "{{4.url}}"
-              }
+              "image_url": "{{4.url}}"
             }
           ]
         }
       ],
-      "max_tokens": 1024
+      "max_tokens": 1024,
+      "temperature": 0.3
     }
     ```
     
     **【變數說明】**
-    - **使用原生 ImgBB 模組：** `{{4.url}}` - 直接取得圖片 URL
-    - **使用 HTTP 模組上傳 imgbb：** `{{4.data.url}}` - 需多一層 data
-    - 在 Make.com 編輯 JSON 時，可以直接在 `"url": "` 後方點擊，從變數面板選取
+    - `{{4.url}}` - 來自 ImgBB 原生模組的圖片 URL
+    - 若使用 HTTP 模組上傳 imgbb，改用 `{{4.data.url}}`
     
-    **【優點】使用原生 Mistral 模組的好處：**
-    - ✅ 自動處理 Authorization header
-    - ✅ 連線管理更方便
-    - ✅ 不需要手動填寫完整 URL
-    - ✅ 更好的錯誤提示
-    
-    **輸出變數 (用於下一步)：**
-    - `{{5.data.choices[1].message.content}}` - OCR 辨識結果文字 ⭐
-    - **【注意】** Make.com 的陣列索引是 1-based，所以 `choices[0]` 要寫成 `choices[1]`
+    **輸出變數：**
+    - `{{5.body.choices[].message.content}}` - API Call 的回覆在 `body` 中
     
     ---
     
     <details>
     <summary>📋 **備用方法：使用 HTTP 模組 (點擊展開)**</summary>
     
-    如果您沒有 Mistral 付費帳戶或偏好使用 HTTP 模組：
+    如果您沒有 Mistral 帳戶或偏好使用 HTTP 模組：
     
     | 設定項目 | 設定值 |
     |---------|--------|
@@ -1177,27 +1220,34 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     **Body type:** `Raw`  
     **Content type:** `JSON (application/json)`
     
-    **Request content:** (使用上方相同的 JSON Body)
+    **Request content:** (使用方法 B 的 JSON Body)
     
     | 設定項目 | 設定值 |
     |---------|--------|
     | **Parse response** | `Yes` ✅ |
     
+    **輸出變數：** `{{5.data.choices[1].message.content}}`
+    
     </details>
     
     ---
     
-    **Mistral API 回應範例：**
+    **Mistral Chat Completion API 回應範例：**
+    
+    根據 [Mistral API 文件](https://docs.mistral.ai/api/endpoint/chat)，回應格式如下：
+    
     ```json
     {
-      "id": "cmpl-xxxxx",
+      "id": "cmpl-e5cc70bb28c444948073e77776eb30ef",
       "object": "chat.completion",
+      "model": "pixtral-12b-2409",
+      "created": 1702256327,
       "choices": [
         {
           "index": 0,
           "message": {
             "role": "assistant",
-            "content": "這是圖片中辨識出的文字內容..."
+            "content": "這張圖片顯示的是一份文件，上面的文字內容如下：\n\n1. 標題：會議通知\n2. 日期：2024年12月1日\n3. 地點：會議室A..."
           },
           "finish_reason": "stop"
         }
@@ -1213,7 +1263,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     ---
     ### **步驟 6：模組 D - LINE > Send a Reply Message**
     
-    將 OCR 辨識結果回傳給使用者。
+    將圖片分析/OCR 辨識結果回傳給使用者。
     
     | 設定項目 | 設定值 |
     |---------|--------|
@@ -1225,13 +1275,23 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     | 設定項目 | 設定值 |
     |---------|--------|
     | **Type** | `Text` |
-    | **Text** | `{{5.data.choices[1].message.content}}` |
+    | **Text** | (根據您使用的方法選擇，見下方說明) |
+    
+    **【輸出變數對照表】** 根據步驟 5 使用的方法：
+    
+    | 步驟 5 使用的方法 | LINE Text 欄位應填入 |
+    |------------------|---------------------|
+    | **方法 A：Create Chat Completion** | `{{5.choices[].message.content}}` |
+    | **方法 B：Make an API Call** | `{{5.body.choices[].message.content}}` |
+    | **備用：HTTP 模組** | `{{5.data.choices[1].message.content}}` |
+    
+    **【注意】** 模組編號 (如 `5`) 可能因您的流程而不同，請從變數面板確認正確的模組編號。
     
     **【美化輸出 (選用)】** 如果想加上前綴說明：
     ```
-    📝 OCR 辨識結果：
+    📷 圖片分析結果：
     
-    {{5.data.choices[1].message.content}}
+    {{5.choices[].message.content}}
     ```
 
     ---
@@ -1274,18 +1334,19 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     - [ ] Mistral AI Connection 已建立 (需輸入 API Key)
     
     **模組設定：**
-    - [ ] 模型名稱使用 `pixtral-12b-2409` (不是 mistral-large-latest)
+    - [ ] 模型名稱使用 `pixtral-12b-2409` 或 `pixtral-large-latest` (視覺模型)
     - [ ] 圖片 URL 變數正確：原生 ImgBB 模組用 `{{4.url}}`
-    - [ ] 所有變數路徑正確 (特別注意 Make.com 陣列是 1-based)
+    - [ ] Mistral Content Parts 包含 Text 和 Image URL 兩個部分
+    - [ ] LINE 回覆的變數路徑正確 (從變數面板選取)
     - [ ] 已設定 Fallback 路徑處理非圖片訊息
     
-    **原生模組 vs HTTP 模組對照：**
+    **各方法輸出變數對照：**
     
-    | 項目 | 原生模組 (推薦) | HTTP 模組 (備用) |
-    |------|----------------|------------------|
-    | ImgBB URL 變數 | `{{4.url}}` | `{{4.data.url}}` |
-    | Mistral URL | `/v1/chat/completions` | `https://api.mistral.ai/v1/chat/completions` |
-    | 認證方式 | Connection 自動處理 | 手動填 Authorization header |
+    | Mistral 模組方法 | ImgBB URL | Mistral 輸出變數 |
+    |-----------------|-----------|------------------|
+    | **Create Chat Completion** | `{{4.url}}` | `{{5.choices[].message.content}}` |
+    | **Make an API Call** | `{{4.url}}` | `{{5.body.choices[].message.content}}` |
+    | **HTTP 模組 (備用)** | `{{4.data.url}}` | `{{5.data.choices[1].message.content}}` |
 
     ---
     ### **測試流程**
@@ -1299,10 +1360,12 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     
     | 問題 | 可能原因 | 解決方法 |
     |------|---------|---------|
-    | imgbb 上傳失敗 | API Key 錯誤或過期 | 重新確認 API Key |
+    | imgbb 上傳失敗 | Connection 未授權 | 重新建立 ImgBB Connection |
     | Mistral 回傳錯誤 | 使用了不支援視覺的模型 | 改用 `pixtral-12b-2409` |
+    | Mistral 無法讀取圖片 | Content Type 設定錯誤 | 確認選擇 `Content Parts` 並正確設定 Image URL |
     | LINE 沒收到回覆 | Reply Token 過期 (只有 30 秒效期) | 確保流程在 30 秒內完成 |
-    | 變數取不到值 | 陣列索引錯誤 | Make.com 用 1-based，不是 0-based |
+    | 變數取不到值 | 輸出變數路徑錯誤 | 從變數面板確認正確路徑 (choices[].message.content) |
+    | 回覆是空的 | 模組編號不對 | 確認 Mistral 模組的實際編號 (可能不是 5) |
 
     ---
     ### **替代方案：使用 OpenAI GPT-4 Vision**
