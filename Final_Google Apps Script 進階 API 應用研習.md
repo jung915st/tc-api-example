@@ -268,7 +268,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
 
 ##
 
-## **Part 3: 啟用並串接 Google API (10:40 \- 12:00)**
+## **Part 3: 啟用並串接 Google API **
 
 - **Google Cloud Platform (GCP) 與 GAS 的關聯**
   - 說明：每個 GAS 專案背後，其實都對應一個隱藏的 Google Cloud 專案。當我們需要使用 Google 的「進階服務」(Advanced Services) 或手動啟用 API 時，就會接觸到 GCP。
@@ -1051,10 +1051,10 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     | **Data** | `{{3.data}}` (來自 LINE Download 模組的檔案資料) |
     
     **【優點】使用原生模組的好處：**
-    - ✅ 不需要手動管理 API Key
-    - ✅ 不需要 Base64 編碼轉換
-    - ✅ Make.com 自動處理連線與認證
-    - ✅ 更清晰的錯誤訊息
+    -  不需要手動管理 API Key
+    -  不需要 Base64 編碼轉換
+    -  Make.com 自動處理連線與認證
+    -  更清晰的錯誤訊息
     
     **輸出變數 (用於下一步)：**
     - `{{4.url}}` - 圖片的公開 URL ⭐
@@ -1085,7 +1085,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **Parse response** | `Yes` ✅ |
+    | **Parse response** | `Yes`  |
     
     **輸出變數：** `{{4.data.url}}` (注意路徑與原生模組不同)
     
@@ -1224,7 +1224,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     
     | 設定項目 | 設定值 |
     |---------|--------|
-    | **Parse response** | `Yes` ✅ |
+    | **Parse response** | `Yes`  |
     
     **輸出變數：** `{{5.data.choices[1].message.content}}`
     
@@ -1407,7 +1407,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
 
 ##
 
-## **Part 7: Q\&A 與未來展望 (16:30 \- 17:00)**
+## **Part 7: Q\&A **
 
 - 學員問題解答
 - 錯誤處理 (try-catch) 的重要性
