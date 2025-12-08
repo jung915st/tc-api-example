@@ -962,6 +962,8 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
       - `pixtral-large-latest` - 進階視覺模型 (效果更好，但消耗更多 tokens)
     - **API 端點：** `POST https://api.mistral.ai/v1/chat/completions`
     - **文件：** [Mistral AI - Vision Guide](https://docs.mistral.ai/capabilities/vision/)
+  - **自建AI平臺:**
+    - `https://huggingface.co/models`  
 
 - **Lab 5: 建立 OCR 機器人 (Make.com 流程詳解)**
 
