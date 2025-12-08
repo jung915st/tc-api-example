@@ -1372,6 +1372,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
     ### **替代方案：使用 OpenAI GPT-4 Vision**
     
     如果 Mistral 不穩定，可以改用 OpenAI 的 GPT-4 Vision：
+    或 Gemini API: https://aistudio.google.com/api-keys
     
     **URL:** `https://api.openai.com/v1/chat/completions`
     
