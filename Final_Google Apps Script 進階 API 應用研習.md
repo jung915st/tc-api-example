@@ -676,6 +676,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
   - 什麼是 LINE Bot？它如何接收與回覆訊息？
   - 關鍵元素：Channel Secret (頻道密鑰) & Channel Access Token (頻道存取權杖)。
   - Webhook 概念複習：LINE 平台如何透過 HTTP POST 請求，將使用者訊息「推送」到我們的後端服務 (Make.com)。
+  - https://ithelp.ithome.com.tw/articles/10373984
 - **Make.com 視覺化流程平台入門**
   - 概念：Scenario (場景)、Module (模組)、Router (路由器)。
   - Make.com 如何取代傳統的程式碼，用拖拉的方式建立自動化流程。
