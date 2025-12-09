@@ -687,6 +687,7 @@ Logger.log('Response Code: ' \+ response.getResponseCode()); // 顯示回應碼�
      - 前往 [LINE Developers Console](https://developers.line.biz/)。
      - 建立一個新的 Provider 和一個 Messaging API Channel。
      - 取得 Channel access token 並記下。
+     - 設定 Messaging API Channel 完成，會要求建立官方帳號(讓使用者用來加入)，建立官方帳號後，到左上角的「設定」可找到 Messaging API的設定
   2. **Make.com 端設定：**
      - 建立一個新的 Scenario。
      - 第一個模組選擇 LINE \> Watch Events。
