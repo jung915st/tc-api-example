@@ -48,5 +48,16 @@ coverage/
 
 # Testing
 /cypress/videos/
+
+# Jupyter Notebooks with potential secrets
+*.ipynb
+AzureAI/code/*.ipynb
+!translator_spa/docs/*.ipynb
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
 /cypress/screenshots/
 __screenshots__/
