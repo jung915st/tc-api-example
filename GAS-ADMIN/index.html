@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <title>Domain Admin Suite v1.4.2</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #f4f7f6; font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; align-items: start; }
+    .main-container { padding: 20px; }
+    .card { border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; }
+    .card-header { font-weight: 600; border-top-left-radius: 12px !important; border-top-right-radius: 12px !important; }
+    .table-container { max-height: 450px; overflow-y: auto; background: white; border-radius: 8px; border: 1px solid #dee2e6; }
+    .loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.7); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
+    .badge-folder { background-color: #ffc107; color: #000; font-size: 0.7rem; }
+    .badge-suspended { background-color: #f8d7da; color: #842029; font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; border: 1px solid #f5c2c7; }
+    .status-panel { background: #e9ecef; border-radius: 8px; padding: 10px; font-size: 0.85rem; margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+<div class="loading-overlay" id="loader">
+  <div class="spinner-border text-primary mb-2" role="status"></div>
+  <div class="fw-bold text-primary" id="loaderText">處理中...</div>
+</div>
+
+<div class="container-fluid main-container">
+  <div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+      <h3 class="text-dark mb-0">Domain Admin Control</h3>
+      <span class="badge bg-dark">v1.4.2 (修復權限錯誤)</span>
+      <span class="ms-2 text-muted small">mail.lres.tc.edu.tw</span>
+    </div>
+    <div class="text-end">
+      <div class="text-muted small">時區: UTC+8 (台北)</div>
+      <button class="btn btn-outline-primary btn-sm mt-1" onclick="initOUs()">重新整理</button>
+    </div>
+  </div>
+
+  <div class="row">
+    <!-- 1. 使用者管理卡片 -->
+    <div class="col-lg-7">
+      <div class="card">
+        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
+          <span>1. 使用者生命週期與刪除隊列</span>
+          <span class="small" id="userCount"></span>
+        </div>
+        <div class="card-body">
+          <div class="row g-2 mb-3">
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">來源 OU</label>
+              <select id="ouSelect" class="form-select form-select-sm">
+                <option value="">載入中...</option>
+              </select>
+            </div>
+            <div class="col-md-6">
+              <label class="form-label small fw-bold">登入篩選</label>
+              <div class="input-group input-group-sm">
+                <input type="date" id="userDateCutoff" class="form-control">
+                <div class="input-group-text">
+                  <input class="form-check-input mt-0 me-1" type="checkbox" id="neverLoginOnly" onchange="toggleDateInput(this)"> 從未
+                </div>
+              </div>
+            </div>
+          </div>
+          <button class="btn btn-primary btn-sm w-100 mb-3" onclick="loadUsers()">查詢帳號</button>
+
+          <div id="userResultArea" class="table-container">
+            <p class="text-center text-muted p-4">請選擇篩選條件開始掃描。</p>
+          </div>
+
+          <div id="userActionButtons" class="mt-3 p-3 bg-light rounded d-none border">
+            <div class="row g-2">
+              <div class="col-md-6">
+                <button class="btn btn-danger btn-sm w-100" onclick="bulkSuspend()">停權 (啟動刪除倒數)</button>
+              </div>
+              <div class="col-md-6">
+                <div class="input-group input-group-sm">
+                  <select id="targetOuSelect" class="form-select">
+                    <option value="">-- 目標 OU --</option>
+                  </select>
+                  <button class="btn btn-warning" onclick="bulkMove()">移動</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="status-panel mt-3">
+            <div class="d-flex justify-content-between align-items-center">
+              <strong>自動化中樞 (Automation Hub)</strong>
+              <span class="text-muted small">每日凌晨 1 點執行</span>
+            </div>
+            <hr class="my-2">
+            <div class="d-flex gap-3">
+              <button class="btn btn-link btn-sm p-0 text-decoration-none" onclick="setupTrigger()">安裝每日排程</button>
+              <span class="text-muted">|</span>
+              <button class="btn btn-link btn-sm p-0 text-decoration-none text-danger" onclick="syncSuspended()">同步現有停權者</button>
+              <span class="text-muted">|</span>
+              <button class="btn btn-link btn-sm p-0 text-decoration-none" onclick="manualCleanup()">立即執行清理</button>
+            </div>
+            <div class="mt-2 xsmall text-danger" style="font-size: 0.7rem;">
+              * 提示：若安裝排程失敗，請到 Script 編輯器手動執行 <b>installTrigger</b> 並通過授權。
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. 雲端硬碟管理卡片 -->
+    <div class="col-lg-5">
+      <div class="card">
+        <div class="card-header bg-success text-white">2. 雲端硬碟內容管理</div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-label small fw-bold">最後修改日期早於</label>
+            <input type="date" id="fileDateCutoff" class="form-control form-control-sm">
+          </div>
+          <button class="btn btn-success btn-sm w-100 mb-3" onclick="loadFiles()">掃描過期檔案</button>
+
+          <div id="fileResultArea" class="table-container">
+            <p class="text-center text-muted p-4">包含共用雲端硬碟項目。</p>
+          </div>
+
+          <div id="fileActionButtons" class="mt-3 d-none">
+            <div class="d-flex gap-2">
+              <button class="btn btn-outline-secondary btn-sm flex-grow-1" onclick="bulkFileAction('archive')">封存 (重新命名)</button>
+              <button class="btn btn-outline-danger btn-sm flex-grow-1" onclick="bulkFileAction('delete')">刪除勾選項目</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const setLoader = (show, text = "處理中...") => {
+    document.getElementById('loader').style.display = show ? 'flex' : 'none';
+    document.getElementById('loaderText').innerText = text;
+  };
+
+  window.onload = initOUs;
+
+  function initOUs() {
+    setLoader(true, "正在讀取組織單位...");
+    google.script.run.withSuccessHandler(ous => {
+      setLoader(false);
+      const sourceSelect = document.getElementById('ouSelect');
+      const targetSelect = document.getElementById('targetOuSelect');
+      let options = '<option value="">-- 全域搜尋 --</option>';
+      ous.forEach(path => options += `<option value="${path}">${path}</option>`);
+      sourceSelect.innerHTML = options;
+      targetSelect.innerHTML = '<option value="">-- 目標 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 --');
+    }).withFailureHandler(err => { setLoader(false); alert(err.message); }).getDomainOUs();
+  }
+
+  function setupTrigger() {
+    setLoader(true, "正在設定排程...");
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); })
+      .withFailureHandler(err => {
+        setLoader(false);
+        alert("權限錯誤：請先關閉視窗，回到 Apps Script 編輯器手動執行一次 installTrigger 函式來授權權限。");
+      }).installTrigger();
+  }
+
+  function syncSuspended() {
+    if (!confirm("這將找出目前網域內「所有」已停權的帳號，並將其加入 3 個月刪除排程。確定嗎？")) return;
+    setLoader(true, "正在同步停權帳號...");
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); }).syncSuspendedToQueue();
+  }
+
+  function manualCleanup() {
+    setLoader(true, "正在清理過期帳號...");
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); }).checkDeletionQueue();
+  }
+
+  function toggleDateInput(checkbox) {
+    const dateInput = document.getElementById('userDateCutoff');
+    dateInput.disabled = checkbox.checked;
+    if (checkbox.checked) dateInput.value = "";
+  }
+
+  function loadUsers() {
+    const ou = document.getElementById('ouSelect').value;
+    const neverLogin = document.getElementById('neverLoginOnly').checked;
+    let date = document.getElementById('userDateCutoff').value;
+    if (neverLogin) date = "NEVER_LOGIN";
+    else if (!date) return alert("請選擇篩選日期或勾選「從未登入」。");
+    setLoader(true, "正在讀取名單...");
+    google.script.run.withSuccessHandler(data => { setLoader(false); renderUserTable(data); }).getFilteredUsers(ou, date);
+  }
+
+  function renderUserTable(data) {
+    const container = document.getElementById('userResultArea');
+    const actionBtn = document.getElementById('userActionButtons');
+    document.getElementById('userCount').innerText = data.length > 0 ? `(${data.length} 位)` : "";
+    if (!data.length) {
+      container.innerHTML = '<p class="text-center p-4">查無使用者。</p>';
+      actionBtn.classList.add('d-none');
+      return;
+    }
+    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllUsers"></th><th>使用者</th><th>最後登入</th></tr></thead><tbody>`;
+    data.forEach(u => {
+      const suspendedBadge = u.suspended ? '<span class="badge-suspended ms-1">已停權</span>' : '';
+      html += `<tr><td><input type="checkbox" class="user-cb" value="${u.email}"></td><td><div><strong>${u.name}</strong>${suspendedBadge}</div><span class="text-muted" style="font-size:0.7rem">${u.email}</span></td><td>${u.lastLogin}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    actionBtn.classList.remove('d-none');
+    document.getElementById('selectAllUsers').onclick = (e) => document.querySelectorAll('.user-cb').forEach(cb => cb.checked = e.target.checked);
+  }
+
+  function bulkSuspend() {
+    const selected = getSelectedValues('.user-cb');
+    if (!selected.length) return alert("請先勾選使用者。");
+    if (!confirm(`確定要停權這 ${selected.length} 位使用者？他們將在 3 個月後被系統永久刪除。`)) return;
+    setLoader(true, "處理停權中...");
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadUsers(); }).processUserSuspension(selected);
+  }
+
+  function bulkMove() {
+    const selected = getSelectedValues('.user-cb');
+    const targetOU = document.getElementById('targetOuSelect').value;
+    if (!selected.length || !targetOU) return alert("請選擇使用者及目標組織。");
+    setLoader(true, "移動中...");
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadUsers(); }).moveUsersToOU(selected, targetOU);
+  }
+
+  function loadFiles() {
+    const date = document.getElementById('fileDateCutoff').value;
+    if (!date) return alert("請選擇日期。");
+    setLoader(true, "掃描檔案中...");
+    google.script.run.withSuccessHandler(data => { setLoader(false); renderFileTable(data); }).getOldFiles(date);
+  }
+
+  function renderFileTable(data) {
+    const container = document.getElementById('fileResultArea');
+    const actionBtn = document.getElementById('fileActionButtons');
+    if (!data.length) {
+      container.innerHTML = '<p class="text-center p-4">查無過期檔案。</p>';
+      actionBtn.classList.add('d-none');
+      return;
+    }
+    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllFiles"></th><th>項目</th><th>修改時間</th></tr></thead><tbody>`;
+    data.forEach(f => {
+      const typeBadge = f.isFolder ? '<span class="badge badge-folder me-1">資料夾</span>' : '';
+      html += `<tr><td><input type="checkbox" class="file-cb" value="${f.id}"></td><td><div class="d-flex align-items-center">${typeBadge} <a href="${f.link}" target="_blank" class="text-truncate" style="max-width:140px;">${f.name}</a></div><small class="text-muted d-block" style="font-size:0.7rem">擁有者: ${f.owner}</small></td><td>${f.modified}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    container.innerHTML = html;
+    actionBtn.classList.remove('d-none');
+    document.getElementById('selectAllFiles').onclick = (e) => document.querySelectorAll('.file-cb').forEach(cb => cb.checked = e.target.checked);
+  }
+
+  function bulkFileAction(action) {
+    const selected = getSelectedValues('.file-cb');
+    if (!selected.length) return alert("請先勾選檔案。");
+    setLoader(true, `執行${action === 'delete' ? '刪除' : '封存'}中...`);
+    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadFiles(); }).manageFiles(selected, action);
+  }
+
+  function getSelectedValues(selector) { return Array.from(document.querySelectorAll(selector + ':checked')).map(cb => cb.value); }
+</script>
+</body>
+</html>
