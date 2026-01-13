@@ -160,8 +160,16 @@
                   <textarea id="courseDesc" class="form-control form-control-sm" rows="2"></textarea>
                 </div>
                 <div class="mb-2">
-                  <label class="form-label small fw-bold">擁有者 (教師 Email，可留空)</label>
-                  <input type="email" id="courseOwner" class="form-control form-control-sm" placeholder="teacher@example.com">
+                  <label class="form-label small fw-bold">擁有者 OU</label>
+                  <select id="ownerOuSelect" class="form-select form-select-sm" onchange="loadOwnerCandidates()">
+                    <option value="">-- 請選擇 OU --</option>
+                  </select>
+                </div>
+                <div class="mb-2">
+                  <label class="form-label small fw-bold">擁有者 (教師)</label>
+                  <select id="courseOwnerSelect" class="form-select form-select-sm">
+                    <option value="me">使用目前帳號</option>
+                  </select>
                 </div>
                 <button class="btn btn-warning btn-sm w-100" onclick="createCourse()">建立課程</button>
               </div>
@@ -233,11 +241,17 @@
       const sourceSelect = document.getElementById('ouSelect');
       const targetSelect = document.getElementById('targetOuSelect');
       const classroomOuSelect = document.getElementById('classroomOuSelect');
+      const ownerOuSelect = document.getElementById('ownerOuSelect');
       let options = '<option value="">-- 全域搜尋 --</option>';
       ous.forEach(path => options += `<option value="${path}">${path}</option>`);
       sourceSelect.innerHTML = options;
       targetSelect.innerHTML = '<option value="">-- 目標 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 --');
       classroomOuSelect.innerHTML = '<option value="">-- 請選擇 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 OU --');
+      ownerOuSelect.innerHTML = '<option value="">-- 請選擇 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 OU --');
+      if (ous.length) {
+        ownerOuSelect.value = ous[0];
+        loadOwnerCandidates();
+      }
       loadCourses();
     }).withFailureHandler(err => { setLoader(false); alert(err.message); }).getDomainOUs();
   }
@@ -354,7 +368,7 @@
       name: document.getElementById('courseName').value.trim(),
       section: document.getElementById('courseSection').value.trim(),
       description: document.getElementById('courseDesc').value.trim(),
-      ownerEmail: document.getElementById('courseOwner').value.trim()
+      ownerEmail: document.getElementById('courseOwnerSelect').value.trim()
     };
     if (!payload.name) return alert("請輸入課程名稱。");
     setLoader(true, "建立課程中...");
@@ -363,7 +377,7 @@
       document.getElementById('courseName').value = "";
       document.getElementById('courseSection').value = "";
       document.getElementById('courseDesc').value = "";
-      document.getElementById('courseOwner').value = "";
+      document.getElementById('courseOwnerSelect').value = "me";
       loadCourses();
     }).withFailureHandler(err => {
       setLoader(false);
@@ -372,10 +386,15 @@
   }
 
   function loadCourses() {
+    setLoader(true, "載入課程中...");
     google.script.run.withSuccessHandler(data => {
+      setLoader(false);
       renderCourseTable(data);
       refreshCourseSelect(data);
-    }).withFailureHandler(err => alert(err.message)).listCreatedClassroomCourses();
+    }).withFailureHandler(err => {
+      setLoader(false);
+      alert(err.message);
+    }).listCreatedClassroomCourses();
   }
 
   function renderCourseTable(data) {
@@ -384,10 +403,12 @@
       container.innerHTML = '<p class="text-center p-4">尚無課程紀錄。</p>';
       return;
     }
-    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllCourses"></th><th>課程</th><th>擁有者</th></tr></thead><tbody>`;
+    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllCourses"></th><th>課程</th><th>管理</th></tr></thead><tbody>`;
     data.forEach(c => {
       const section = c.section ? `<div class="text-muted xsmall-text">${c.section}</div>` : '';
-      html += `<tr><td><input type="checkbox" class="course-cb" value="${c.id}"></td><td><div><strong>${c.name}</strong>${section}</div><div class="text-muted xsmall-text">${c.id}</div></td><td>${c.owner || '-'}</td></tr>`;
+      const owner = c.owner ? `<div class="xsmall-text">Owner: ${c.owner}</div>` : '<div class="xsmall-text text-muted">Owner: -</div>';
+      const teacher = c.teacher ? `<div class="xsmall-text">Teacher: ${c.teacher}</div>` : '<div class="xsmall-text text-muted">Teacher: -</div>';
+      html += `<tr><td><input type="checkbox" class="course-cb" value="${c.id}"></td><td><div><strong>${c.name}</strong>${section}</div><div class="text-muted xsmall-text">${c.id}</div></td><td>${owner}${teacher}</td></tr>`;
     });
     html += '</tbody></table>';
     container.innerHTML = html;
@@ -474,6 +495,27 @@
       setLoader(false);
       alert(err.message);
     }).addStudentsToCourse(courseId, members);
+  }
+
+  function loadOwnerCandidates() {
+    const ouPath = document.getElementById('ownerOuSelect').value;
+    const ownerSelect = document.getElementById('courseOwnerSelect');
+    if (!ouPath) {
+      ownerSelect.innerHTML = '<option value="me">使用目前帳號</option>';
+      return;
+    }
+    setLoader(true, "讀取 OU 成員...");
+    google.script.run.withSuccessHandler(data => {
+      setLoader(false);
+      let options = '<option value="me">使用目前帳號</option>';
+      data.forEach(m => {
+        options += `<option value="${m.email}">${m.name} (${m.email})</option>`;
+      });
+      ownerSelect.innerHTML = options;
+    }).withFailureHandler(err => {
+      setLoader(false);
+      alert(err.message);
+    }).getOuMembers(ouPath);
   }
 
   function runClassroomTest() {

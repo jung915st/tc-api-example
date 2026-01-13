@@ -15,6 +15,7 @@ const APP_VERSION = "1.5.0";
 const TZ = "GMT+8";
 const CLASSROOM_COURSE_SHEET = "Classroom_Courses";
 const CLASSROOM_LOG_SHEET = "Classroom_Logs";
+const CLASSROOM_SPREADSHEET_ID_PROPERTY = "CLASSROOM_SPREADSHEET_ID";
 
 /**
  * Standard Web App Entry Point
@@ -277,16 +278,19 @@ function createClassroomCourse(payload) {
     name: payload.name,
     section: payload.section || "",
     description: payload.description || "",
-    ownerId: payload.ownerEmail || "me",
+    ownerId: "me",
     courseState: "ACTIVE"
   };
 
   try {
     const created = Classroom.Courses.create(course);
-    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
-    sheet.appendRow([created.id, created.name, created.section || "", created.ownerId || "", new Date()]);
+    if (payload.ownerEmail && payload.ownerEmail !== "me") {
+      Classroom.Courses.Teachers.create({ userId: payload.ownerEmail }, created.id);
+    }
+    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
+    sheet.appendRow([created.id, created.name, created.section || "", created.ownerId || "", payload.ownerEmail || "", new Date()]);
     logClassroomAction_("CREATE_COURSE", created.id, "SUCCESS", created.name);
-    return { id: created.id, name: created.name, section: created.section || "", owner: created.ownerId || "" };
+    return { id: created.id, name: created.name, section: created.section || "", owner: created.ownerId || "", teacher: payload.ownerEmail || "" };
   } catch (e) {
     logClassroomAction_("CREATE_COURSE", payload.name, "FAILED", e.message);
     throw new Error("建立課程失敗: " + e.message);
@@ -294,17 +298,77 @@ function createClassroomCourse(payload) {
 }
 
 function listCreatedClassroomCourses() {
-  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return [];
-  const rows = data.slice(1).filter(row => row[0]);
-  return rows.map(row => ({
-    id: row[0],
-    name: row[1],
-    section: row[2],
-    owner: row[3],
-    createdAt: row[4]
-  }));
+  try {
+    let pageToken = null;
+    const courses = [];
+    do {
+      const response = Classroom.Courses.list({
+        pageSize: 100,
+        courseStates: ["ACTIVE", "PROVISIONED"],
+        pageToken: pageToken
+      });
+      const items = response.courses || [];
+      items.forEach(course => {
+        courses.push({
+          id: course.id,
+          name: course.name,
+          section: course.section || "",
+          owner: course.ownerId || "",
+          createdAt: course.creationTime || ""
+        });
+      });
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
+    const sheetData = sheet.getDataRange().getValues();
+    if (sheetData.length > 1) {
+      const rows = sheetData.slice(1).filter(row => row[0]);
+      const teacherById = {};
+      rows.forEach(row => {
+        teacherById[row[0]] = {
+          owner: row[3],
+          teacher: row[4],
+          createdAt: row[5]
+        };
+      });
+      courses.forEach(course => {
+        const info = teacherById[course.id];
+        if (info) {
+          course.owner = course.owner || info.owner || "";
+          course.teacher = info.teacher || "";
+          course.createdAt = course.createdAt || info.createdAt || "";
+        }
+      });
+      rows.forEach(row => {
+        if (!courses.some(c => c.id === row[0])) {
+          courses.push({
+            id: row[0],
+            name: row[1],
+            section: row[2],
+            owner: row[3],
+            teacher: row[4],
+            createdAt: row[5]
+          });
+        }
+      });
+    }
+    courses.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+    return courses;
+  } catch (e) {
+    logClassroomAction_("LIST_COURSES", "Classroom API", "FAILED", e.message);
+    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
+    const data = sheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+    const rows = data.slice(1).filter(row => row[0]);
+    return rows.map(row => ({
+      id: row[0],
+      name: row[1],
+      section: row[2],
+      owner: row[3],
+      teacher: row[4],
+      createdAt: row[5]
+    }));
+  }
 }
 
 function deleteClassroomCourse(courseId) {
@@ -381,20 +445,25 @@ function runClassroomDiagnostics() {
   }
 }
 
-function getOrCreateSheet_(name, headers) {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+function getOrCreateSheet_(name, headers, spreadsheet) {
+  const ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
   let sheet = ss.getSheetByName(name);
   if (!sheet) {
     sheet = ss.insertSheet(name);
     if (headers && headers.length) sheet.appendRow(headers);
-  } else if (sheet.getLastRow() === 0 && headers && headers.length) {
-    sheet.appendRow(headers);
+  } else if (headers && headers.length) {
+    if (sheet.getLastRow() === 0) {
+      sheet.appendRow(headers);
+    } else {
+      const headerRange = sheet.getRange(1, 1, 1, headers.length);
+      headerRange.setValues([headers]);
+    }
   }
   return sheet;
 }
 
 function removeCourseFromSheet_(courseId) {
-  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
+  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
   const data = sheet.getDataRange().getValues();
   if (data.length <= 1) return;
   const rows = [data[0]];
@@ -406,6 +475,19 @@ function removeCourseFromSheet_(courseId) {
 }
 
 function logClassroomAction_(action, target, status, detail) {
-  const sheet = getOrCreateSheet_(CLASSROOM_LOG_SHEET, ["Timestamp", "Action", "Target", "Status", "Detail", "Version"]);
+  const sheet = getOrCreateSheet_(CLASSROOM_LOG_SHEET, ["Timestamp", "Action", "Target", "Status", "Detail", "Version"], getClassroomSpreadsheet_());
   sheet.appendRow([new Date(), action, target, status, detail || "", APP_VERSION]);
+}
+
+function getClassroomSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const spreadsheetId = props.getProperty(CLASSROOM_SPREADSHEET_ID_PROPERTY);
+  if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
+  return SpreadsheetApp.getActiveSpreadsheet();
+}
+
+function setClassroomSpreadsheetId(spreadsheetId) {
+  if (!spreadsheetId) throw new Error("Spreadsheet ID 為必填。");
+  PropertiesService.getScriptProperties().setProperty(CLASSROOM_SPREADSHEET_ID_PROPERTY, spreadsheetId);
+  return "已更新 Classroom Spreadsheet ID。";
 }
