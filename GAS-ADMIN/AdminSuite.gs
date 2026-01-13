@@ -1,15 +1,20 @@
 /**
  * Project: Admin Management Suite
- * Version: 1.4.2
- * Updated: 2024-05-23 (Timezone UTC+8)
+ * Version: 1.5.0
+ * Updated: 2026-01-13 (Timezone UTC+8)
  * Description: Added OAuth Scopes to fix Trigger permissions.
  * * 必要的權限授權 (如果手動執行失敗，請在「服務」中已啟用 Admin SDK)：
  * @OnlyCurrentDoc
  * @include https://www.googleapis.com/auth/script.scriptapp
+ * Classroom scopes:
+ * @include https://www.googleapis.com/auth/classroom.courses
+ * @include https://www.googleapis.com/auth/classroom.rosters
  */
 
-const APP_VERSION = "1.4.2";
+const APP_VERSION = "1.5.0";
 const TZ = "GMT+8";
+const CLASSROOM_COURSE_SHEET = "Classroom_Courses";
+const CLASSROOM_LOG_SHEET = "Classroom_Logs";
 
 /**
  * Standard Web App Entry Point
@@ -264,4 +269,143 @@ function manageFiles(fileIds, action) {
     } catch (e) {}
   });
   return `成功 ${action === 'delete' ? '刪除' : '封存'} ${fileIds.length} 個項目。`;
+}
+
+function createClassroomCourse(payload) {
+  if (!payload || !payload.name) throw new Error("課程名稱為必填。");
+  const course = {
+    name: payload.name,
+    section: payload.section || "",
+    description: payload.description || "",
+    ownerId: payload.ownerEmail || "me",
+    courseState: "ACTIVE"
+  };
+
+  try {
+    const created = Classroom.Courses.create(course);
+    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
+    sheet.appendRow([created.id, created.name, created.section || "", created.ownerId || "", new Date()]);
+    logClassroomAction_("CREATE_COURSE", created.id, "SUCCESS", created.name);
+    return { id: created.id, name: created.name, section: created.section || "", owner: created.ownerId || "" };
+  } catch (e) {
+    logClassroomAction_("CREATE_COURSE", payload.name, "FAILED", e.message);
+    throw new Error("建立課程失敗: " + e.message);
+  }
+}
+
+function listCreatedClassroomCourses() {
+  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return [];
+  const rows = data.slice(1).filter(row => row[0]);
+  return rows.map(row => ({
+    id: row[0],
+    name: row[1],
+    section: row[2],
+    owner: row[3],
+    createdAt: row[4]
+  }));
+}
+
+function deleteClassroomCourse(courseId) {
+  if (!courseId) throw new Error("課程 ID 為必填。");
+  try {
+    Classroom.Courses.delete(courseId);
+    removeCourseFromSheet_(courseId);
+    logClassroomAction_("DELETE_COURSE", courseId, "SUCCESS", "");
+    return "課程已刪除: " + courseId;
+  } catch (e) {
+    logClassroomAction_("DELETE_COURSE", courseId, "FAILED", e.message);
+    throw new Error("刪除課程失敗: " + e.message);
+  }
+}
+
+function getOuMembers(ouPath) {
+  if (!ouPath) throw new Error("請選擇 OU。");
+  const members = [];
+  let pageToken = null;
+  try {
+    do {
+      const response = AdminDirectory.Users.list({
+        customer: 'my_customer',
+        query: `orgUnitPath='${ouPath}'`,
+        maxResults: 500,
+        pageToken: pageToken,
+        viewType: 'admin_view'
+      });
+      const users = response.users || [];
+      users.forEach(user => {
+        if (!user.suspended) {
+          members.push({ name: user.name.fullName, email: user.primaryEmail });
+        }
+      });
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+    return members;
+  } catch (e) {
+    throw new Error("讀取 OU 成員失敗: " + e.message);
+  }
+}
+
+function addStudentsToCourse(courseId, emails) {
+  if (!courseId) throw new Error("請選擇課程。");
+  if (!emails || emails.length === 0) throw new Error("請選擇成員。");
+  let success = 0;
+  let failed = 0;
+  const errors = [];
+  emails.forEach(email => {
+    try {
+      Classroom.Courses.Students.create({ userId: email }, courseId);
+      success++;
+    } catch (e) {
+      failed++;
+      errors.push(email + ": " + e.message);
+    }
+  });
+  const status = failed ? "PARTIAL" : "SUCCESS";
+  logClassroomAction_("ADD_STUDENTS", courseId, status, `success=${success}, failed=${failed}`);
+  return {
+    message: `加入完成：成功 ${success} 人，失敗 ${failed} 人。`,
+    errors: errors
+  };
+}
+
+function runClassroomDiagnostics() {
+  try {
+    const result = Classroom.Courses.list({ pageSize: 1, courseStates: ["ACTIVE"] });
+    logClassroomAction_("DIAGNOSTIC", "Classroom API", "SUCCESS", "list ok");
+    return "Classroom API 測試成功。可讀取課程數量: " + (result.courses ? result.courses.length : 0);
+  } catch (e) {
+    logClassroomAction_("DIAGNOSTIC", "Classroom API", "FAILED", e.message);
+    throw new Error("Classroom API 測試失敗: " + e.message);
+  }
+}
+
+function getOrCreateSheet_(name, headers) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    if (headers && headers.length) sheet.appendRow(headers);
+  } else if (sheet.getLastRow() === 0 && headers && headers.length) {
+    sheet.appendRow(headers);
+  }
+  return sheet;
+}
+
+function removeCourseFromSheet_(courseId) {
+  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Created At"]);
+  const data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return;
+  const rows = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    if (data[i][0] !== courseId) rows.push(data[i]);
+  }
+  sheet.clearContents();
+  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
+}
+
+function logClassroomAction_(action, target, status, detail) {
+  const sheet = getOrCreateSheet_(CLASSROOM_LOG_SHEET, ["Timestamp", "Action", "Target", "Status", "Detail", "Version"]);
+  sheet.appendRow([new Date(), action, target, status, detail || "", APP_VERSION]);
 }
