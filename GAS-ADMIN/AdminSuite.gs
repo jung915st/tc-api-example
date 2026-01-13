@@ -1,6 +1,6 @@
 /**
  * Project: Admin Management Suite
- * Version: 1.5.0
+ * Version: 1.5.2
  * Updated: 2026-01-13 (Timezone UTC+8)
  * Description: Added OAuth Scopes to fix Trigger permissions.
  * * 必要的權限授權 (如果手動執行失敗，請在「服務」中已啟用 Admin SDK)：
@@ -11,7 +11,7 @@
  * @include https://www.googleapis.com/auth/classroom.rosters
  */
 
-const APP_VERSION = "1.5.0";
+const APP_VERSION = "1.5.2";
 const TZ = "GMT+8";
 const CLASSROOM_COURSE_SHEET = "Classroom_Courses";
 const CLASSROOM_LOG_SHEET = "Classroom_Logs";
