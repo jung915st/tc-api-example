@@ -1,533 +1,735 @@
 <!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
+  <base target="_top">
   <meta charset="UTF-8">
-  <title>Domain Admin Suite v1.5.0</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Domain Admin Suite v1.8.2</title>
+  
+  <!-- Bootstrap 5 & Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+  
   <style>
-    body { background-color: #f4f7f6; font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; align-items: start; }
-    .main-container { padding: 20px; }
-    .card { border: none; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 25px; }
-    .card-header { font-weight: 600; border-top-left-radius: 12px !important; border-top-right-radius: 12px !important; }
-    .table-container { max-height: 450px; overflow-y: auto; background: white; border-radius: 8px; border: 1px solid #dee2e6; }
-    .loading-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.7); z-index: 1000; justify-content: center; align-items: center; flex-direction: column; }
-    .badge-folder { background-color: #ffc107; color: #000; font-size: 0.7rem; }
-    .badge-suspended { background-color: #f8d7da; color: #842029; font-size: 0.65rem; padding: 2px 5px; border-radius: 4px; border: 1px solid #f5c2c7; }
-    .status-panel { background: #e9ecef; border-radius: 8px; padding: 10px; font-size: 0.85rem; margin-top: 10px; }
-    .xsmall-text { font-size: 0.7rem; }
+    body {
+      background-color: #f8f9fa;
+      font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center; 
+      justify-content: flex-start;
+      padding-top: 20px;
+    }
+    
+    .main-container {
+      width: 100%;
+      max-width: 1200px;
+      padding: 0 15px;
+    }
+
+    .card {
+      border: none;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+      margin-bottom: 20px;
+    }
+
+    /* Tabs */
+    .nav-tabs .nav-link { color: #495057; font-weight: 500; }
+    .nav-tabs .nav-link.active { color: #0d6efd; border-top: 3px solid #0d6efd; background-color: #fff; }
+
+    /* Loading Overlay */
+    #loadingOverlay {
+      display: none;
+      position: fixed;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      background: rgba(255,255,255,0.85);
+      z-index: 9999;
+      justify-content: center;
+      align-items: center;
+      flex-direction: column;
+    }
+
+    /* Scrollable Areas */
+    .table-scroll { max-height: 500px; overflow-y: auto; }
+    .checklist-scroll { max-height: 300px; overflow-y: auto; border: 1px solid #dee2e6; border-radius: 4px; padding: 10px; background: #fff; }
+
+    /* Filter Bars */
+    .filters-bar { background-color: #fff; padding: 15px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 15px; }
   </style>
 </head>
 <body>
 
-<div class="loading-overlay" id="loader">
-  <div class="spinner-border text-primary mb-2" role="status"></div>
-  <div class="fw-bold text-primary" id="loaderText">處理中...</div>
-</div>
-
-<div class="container-fluid main-container">
-  <div class="d-flex justify-content-between align-items-center mb-4">
-    <div>
-      <h3 class="text-dark mb-0">Domain Admin Control</h3>
-      <span class="badge bg-dark">v1.5.0 (Classroom 管理)</span>
-      <span class="ms-2 text-muted small">mail.lres.tc.edu.tw</span>
+  <!-- Loading Overlay -->
+  <div id="loadingOverlay">
+    <div class="spinner-border text-primary" role="status" style="width: 3rem; height: 3rem;">
+      <span class="visually-hidden">Loading...</span>
     </div>
-    <div class="text-end">
-      <div class="text-muted small">時區: UTC+8 (台北)</div>
-      <button class="btn btn-outline-primary btn-sm mt-1" onclick="initOUs()">重新整理</button>
-    </div>
+    <div id="loadingText" class="mt-3 text-secondary fw-bold">Processing...</div>
   </div>
 
-  <div class="row">
-    <!-- 1. 使用者管理卡片 -->
-    <div class="col-lg-7">
-      <div class="card">
-        <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center">
-          <span>1. 使用者生命週期與刪除隊列</span>
-          <span class="small" id="userCount"></span>
-        </div>
-        <div class="card-body">
-          <div class="row g-2 mb-3">
-            <div class="col-md-6">
-              <label class="form-label small fw-bold">來源 OU</label>
-              <select id="ouSelect" class="form-select form-select-sm">
-                <option value="">載入中...</option>
-              </select>
-            </div>
-            <div class="col-md-6">
-              <label class="form-label small fw-bold">登入篩選</label>
-              <div class="input-group input-group-sm">
-                <input type="date" id="userDateCutoff" class="form-control">
-                <div class="input-group-text">
-                  <input class="form-check-input mt-0 me-1" type="checkbox" id="neverLoginOnly" onchange="toggleDateInput(this)"> 從未
-                </div>
-              </div>
-            </div>
-          </div>
-          <button class="btn btn-primary btn-sm w-100 mb-3" onclick="loadUsers()">查詢帳號</button>
-
-          <div id="userResultArea" class="table-container">
-            <p class="text-center text-muted p-4">請選擇篩選條件開始掃描。</p>
-          </div>
-
-          <div id="userActionButtons" class="mt-3 p-3 bg-light rounded d-none border">
-            <div class="row g-2">
-              <div class="col-md-6">
-                <button class="btn btn-danger btn-sm w-100" onclick="bulkSuspend()">停權 (啟動刪除倒數)</button>
-              </div>
-              <div class="col-md-6">
-                <div class="input-group input-group-sm">
-                  <select id="targetOuSelect" class="form-select">
-                    <option value="">-- 目標 OU --</option>
-                  </select>
-                  <button class="btn btn-warning" onclick="bulkMove()">移動</button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="status-panel mt-3">
-            <div class="d-flex justify-content-between align-items-center">
-              <strong>自動化中樞 (Automation Hub)</strong>
-              <span class="text-muted small">每日凌晨 1 點執行</span>
-            </div>
-            <hr class="my-2">
-            <div class="d-flex gap-3">
-              <button class="btn btn-link btn-sm p-0 text-decoration-none" onclick="setupTrigger()">安裝每日排程</button>
-              <span class="text-muted">|</span>
-              <button class="btn btn-link btn-sm p-0 text-decoration-none text-danger" onclick="syncSuspended()">同步現有停權者</button>
-              <span class="text-muted">|</span>
-              <button class="btn btn-link btn-sm p-0 text-decoration-none" onclick="manualCleanup()">立即執行清理</button>
-            </div>
-            <div class="mt-2 xsmall text-danger" style="font-size: 0.7rem;">
-              * 提示：若安裝排程失敗，請到 Script 編輯器手動執行 <b>installTrigger</b> 並通過授權。
-            </div>
-          </div>
-        </div>
+  <div class="main-container">
+    
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div>
+        <h3 class="mb-0">Domain Admin Suite</h3>
+        <small class="text-muted">Version 1.8.2 | UTC+8</small>
+      </div>
+      <div>
+        <button class="btn btn-outline-secondary btn-sm" onclick="runConnectivityTest()">Test API Connection</button>
       </div>
     </div>
 
-    <!-- 2. 雲端硬碟管理卡片 -->
-    <div class="col-lg-5">
-      <div class="card">
-        <div class="card-header bg-success text-white">2. 雲端硬碟內容管理</div>
-        <div class="card-body">
-          <div class="mb-3">
-            <label class="form-label small fw-bold">最後修改日期早於</label>
-            <input type="date" id="fileDateCutoff" class="form-control form-control-sm">
-          </div>
-          <button class="btn btn-success btn-sm w-100 mb-3" onclick="loadFiles()">掃描過期檔案</button>
+    <!-- Navigation Tabs -->
+    <ul class="nav nav-tabs mb-3" id="adminTabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="classroom-tab" data-bs-toggle="tab" data-bs-target="#classroom" type="button" onclick="loadCourses();">Classroom Manager</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="users-tab" data-bs-toggle="tab" data-bs-target="#users" type="button" onclick="loadOUs('ouSelect')">User Lifecycle</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="drive-tab" data-bs-toggle="tab" data-bs-target="#drive" type="button">Drive Audit</button>
+      </li>
+    </ul>
 
-          <div id="fileResultArea" class="table-container">
-            <p class="text-center text-muted p-4">包含共用雲端硬碟項目。</p>
-          </div>
-
-          <div id="fileActionButtons" class="mt-3 d-none">
-            <div class="d-flex gap-2">
-              <button class="btn btn-outline-secondary btn-sm flex-grow-1" onclick="bulkFileAction('archive')">封存 (重新命名)</button>
-              <button class="btn btn-outline-danger btn-sm flex-grow-1" onclick="bulkFileAction('delete')">刪除勾選項目</button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row">
-    <!-- 3. Classroom 課程管理卡片 -->
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center">
-          <span>3. Google Classroom 課程管理</span>
-          <div class="small">
-            <button class="btn btn-outline-dark btn-sm" onclick="runClassroomTest()">API 測試</button>
-          </div>
-        </div>
-        <div class="card-body">
-          <div class="row g-3">
-            <div class="col-lg-5">
-              <div class="border rounded p-3 bg-light h-100">
-                <div class="fw-bold mb-2">建立課程</div>
-                <div class="mb-2">
-                  <label class="form-label small fw-bold">課程名稱</label>
-                  <input type="text" id="courseName" class="form-control form-control-sm" placeholder="例如：數學 101">
-                </div>
-                <div class="mb-2">
-                  <label class="form-label small fw-bold">班級/學期</label>
-                  <input type="text" id="courseSection" class="form-control form-control-sm" placeholder="例如：2024-2">
-                </div>
-                <div class="mb-2">
-                  <label class="form-label small fw-bold">描述</label>
-                  <textarea id="courseDesc" class="form-control form-control-sm" rows="2"></textarea>
-                </div>
-                <div class="mb-2">
-                  <label class="form-label small fw-bold">擁有者 OU</label>
-                  <select id="ownerOuSelect" class="form-select form-select-sm" onchange="loadOwnerCandidates()">
-                    <option value="">-- 請選擇 OU --</option>
-                  </select>
-                </div>
-                <div class="mb-2">
-                  <label class="form-label small fw-bold">擁有者 (教師)</label>
-                  <select id="courseOwnerSelect" class="form-select form-select-sm">
-                    <option value="me">使用目前帳號</option>
-                  </select>
-                </div>
-                <button class="btn btn-warning btn-sm w-100" onclick="createCourse()">建立課程</button>
+    <!-- Tab Content -->
+    <div class="tab-content" id="adminTabsContent">
+      
+      <!-- ==================== TAB 1: CLASSROOM ==================== -->
+      <div class="tab-pane fade show active" id="classroom" role="tabpanel">
+        <div class="row">
+          
+          <!-- Left Column: Manage Courses -->
+          <div class="col-lg-7">
+            
+            <!-- Create Course Card -->
+            <div class="card bg-light mb-3">
+              <div class="card-header border-0 bg-transparent fw-bold text-primary">
+                <i class="bi bi-plus-circle"></i> Create New Course
               </div>
-            </div>
+              <div class="card-body">
+                <div class="row g-2">
+                  <div class="col-md-8">
+                    <input type="text" id="newCourseName" class="form-control" placeholder="Course Name (Required)">
+                  </div>
+                  <div class="col-md-4">
+                    <input type="text" id="newCourseSection" class="form-control" placeholder="Section (Opt)">
+                  </div>
+                  
+                  <!-- Owner (Fixed) -->
+                  <div class="col-md-12">
+                    <label class="form-label small text-muted mb-1">Course Owner (Fixed)</label>
+                    <input type="text" class="form-control form-control-sm" value="Me (Admin) - Cannot be changed" disabled readonly>
+                  </div>
 
-            <div class="col-lg-7">
-              <div class="border rounded p-3 h-100">
-                <div class="d-flex justify-content-between align-items-center mb-2">
-                  <div class="fw-bold">已建立課程</div>
-                  <div class="d-flex gap-2">
-                    <button class="btn btn-outline-secondary btn-sm" onclick="loadCourses()">重新整理</button>
-                    <button class="btn btn-outline-danger btn-sm" onclick="deleteSelectedCourses()">刪除勾選</button>
+                  <!-- Teacher Selection Logic -->
+                  <div class="col-md-12">
+                    <label class="form-label small text-muted mb-1">Assign Teacher (Optional)</label>
+                    <div class="input-group">
+                      <select id="newCourseTeacher" class="form-select">
+                        <option value="me" selected>None (Owner only)</option>
+                      </select>
+                      <!-- Filter Teachers by OU -->
+                      <select id="teacherOuFilter" class="form-select" onchange="loadTeacherCandidates(this.value)" style="max-width: 40%;">
+                        <option value="">Search Teacher by OU...</option>
+                        <!-- Populated via JS initOUs -->
+                      </select>
+                    </div>
+                  </div>
+
+                  <div class="col-12 text-end mt-2">
+                    <button class="btn btn-success px-4" onclick="createCourse()">Create Course</button>
                   </div>
                 </div>
-                <div id="courseResultArea" class="table-container">
-                  <p class="text-center text-muted p-4">尚未載入課程。</p>
+              </div>
+            </div>
+
+            <!-- List Courses Card -->
+            <div class="card">
+              <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <span>Active Courses</span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadCourses()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+              </div>
+              <div class="card-body p-0 table-scroll">
+                <table class="table table-hover mb-0 align-middle">
+                  <thead class="table-light sticky-top">
+                    <tr>
+                      <th>Name</th>
+                      <th>Section</th>
+                      <th>Enroll Code</th>
+                      <th class="text-end">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody id="courseTableBody">
+                    <tr><td colspan="4" class="text-center text-muted py-3">Loading courses...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right Column: Enroll Students -->
+          <div class="col-lg-5">
+            <div class="card h-100">
+              <div class="card-header bg-white fw-bold">
+                <i class="bi bi-people"></i> Enroll Students
+              </div>
+              <div class="card-body d-flex flex-column">
+                
+                <!-- Step 1: Select Course -->
+                <div class="mb-3">
+                  <label class="form-label text-muted small fw-bold">1. TARGET COURSE</label>
+                  <select id="enrollCourseSelect" class="form-select bg-light">
+                    <option value="" disabled selected>Select a course from the left...</option>
+                  </select>
                 </div>
+
+                <hr class="my-2">
+
+                <!-- Step 2: Select Source -->
+                <div class="mb-2">
+                  <label class="form-label text-muted small fw-bold">2. SELECT STUDENTS (FROM OU)</label>
+                  <div class="input-group">
+                    <select id="classOuSelect" class="form-select">
+                      <option value="" disabled selected>Select OU...</option>
+                      <!-- Populated via JS initOUs -->
+                    </select>
+                    <button class="btn btn-outline-primary" onclick="loadStudentsFromOu()">Load</button>
+                  </div>
+                </div>
+
+                <!-- Student Checklist -->
+                <div class="mb-3 flex-grow-1 position-relative">
+                   <div id="studentCheckList" class="checklist-scroll h-100">
+                     <div class="text-center text-muted mt-5">
+                       <i class="bi bi-arrow-up-circle d-block fs-4 mb-2"></i>
+                       Select an OU and click "Load" to see students.
+                     </div>
+                   </div>
+                </div>
+
+                <!-- Action -->
+                <button class="btn btn-primary w-100 py-2" onclick="enrollCheckedStudents()">
+                  <i class="bi bi-person-plus"></i> Enroll Selected Students
+                </button>
+
               </div>
             </div>
           </div>
 
-          <hr class="my-4">
+        </div>
+      </div>
 
-          <div class="row g-3">
-            <div class="col-lg-4">
-              <label class="form-label small fw-bold">選擇 OU</label>
-              <select id="classroomOuSelect" class="form-select form-select-sm">
-                <option value="">請先載入 OU</option>
+      <!-- ==================== TAB 2: USER LIFECYCLE ==================== -->
+      <div class="tab-pane fade" id="users" role="tabpanel">
+        
+        <!-- Filters -->
+        <div class="filters-bar">
+          <div class="row g-2 align-items-end">
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Source OU</label>
+              <select id="ouSelect" class="form-select form-select-sm">
+                 <option value="" disabled selected>Select OU...</option>
+                 <!-- Populated via JS initOUs -->
               </select>
-              <button class="btn btn-outline-primary btn-sm w-100 mt-2" onclick="loadOuMembers()">載入 OU 成員</button>
             </div>
-            <div class="col-lg-4">
-              <label class="form-label small fw-bold">選擇課程</label>
-              <select id="classroomCourseSelect" class="form-select form-select-sm">
-                <option value="">請先載入課程</option>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Status Condition</label>
+              <select id="loginStatusSelect" class="form-select form-select-sm" onchange="toggleDatePicker()">
+                <option value="ALL">All Users</option>
+                <option value="NEVER_LOGIN">Never Logged In</option>
+                <option value="BEFORE_DATE">Logged In Before Date</option>
               </select>
-              <button class="btn btn-primary btn-sm w-100 mt-2" onclick="addMembersToCourse()">加入勾選成員</button>
             </div>
-            <div class="col-lg-4">
-              <div class="status-panel">
-                <div class="fw-bold">操作說明</div>
-                <div class="xsmall-text text-muted">先建立課程或重新整理課程列表，再載入 OU 成員。</div>
-                <div class="xsmall-text text-muted">加入成員前請先勾選名單。</div>
-              </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Date Limit</label>
+              <input type="date" id="filterDate" class="form-control form-control-sm" disabled>
+            </div>
+            <div class="col-md-3">
+              <button class="btn btn-primary btn-sm w-100" onclick="filterUsers()">Search Users</button>
             </div>
           </div>
+        </div>
 
-          <div id="ouMemberArea" class="mt-3 table-container">
-            <p class="text-center text-muted p-4">尚未載入 OU 成員。</p>
+        <!-- Toolbar with Dropdown Move -->
+        <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
+          
+          <!-- Group 1: Suspend -->
+          <div>
+            <button class="btn btn-outline-danger btn-sm" onclick="suspendSelected()">
+              <i class="bi bi-pause-circle"></i> Suspend & Queue Delete
+            </button>
+          </div>
+
+          <!-- Group 2: Move OU (Updated with Dropdown) -->
+          <div class="input-group input-group-sm" style="width: auto;">
+             <span class="input-group-text bg-light fw-bold">Move To:</span>
+             <select id="targetOuSelect" class="form-select" style="max-width: 250px;">
+                <option value="" disabled selected>Loading OUs...</option>
+                <!-- Populated via JS initOUs -->
+             </select>
+             <button class="btn btn-outline-secondary" onclick="bulkMoveUsers()">
+               <i class="bi bi-folder-symlink"></i> Execute Move
+             </button>
+          </div>
+
+          <!-- Group 3: Sync/Install -->
+          <div class="btn-group ms-auto">
+            <button class="btn btn-outline-success btn-sm" onclick="syncSuspended()">Sync Existing</button>
+            <button class="btn btn-dark btn-sm" onclick="installTrigger()">Install Auto-Delete Trigger</button>
+          </div>
+        </div>
+
+        <!-- Table -->
+        <div class="card">
+          <div class="card-body p-0 table-scroll">
+            <table class="table table-hover mb-0">
+              <thead class="table-light sticky-top">
+                <tr>
+                  <th width="40"><input type="checkbox" onchange="toggleAll(this, '.user-check')"></th>
+                  <th>Name</th>
+                  <th>Email</th>
+                  <th>Last Login (UTC+8)</th>
+                  <th>Status</th>
+                  <th>OU</th>
+                </tr>
+              </thead>
+              <tbody id="userTableBody">
+                <tr><td colspan="6" class="text-center text-muted py-3">Use filters to display users.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="card-footer bg-white text-muted small">
+            <span id="userCount">0</span> users found.
           </div>
         </div>
       </div>
+
+      <!-- ==================== TAB 3: DRIVE AUDIT ==================== -->
+      <div class="tab-pane fade" id="drive" role="tabpanel">
+        
+        <div class="filters-bar">
+          <div class="row g-3 align-items-end">
+            <div class="col-md-6">
+              <label class="fw-bold small">Modified Before (Date Filter)</label>
+              <div class="input-group">
+                <input type="date" id="driveFilterDate" class="form-control">
+                <button class="btn btn-info text-white" onclick="auditDrive()">
+                  <i class="bi bi-search"></i> Find Large, Old Files
+                </button>
+              </div>
+            </div>
+            <div class="col-md-6 text-end">
+               <span class="text-muted small">
+                 <i class="bi bi-info-circle"></i> Results sorted by Largest Size first.
+                 Includes Shared Drives.
+               </span>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Batch Actions -->
+        <div class="d-flex gap-2 mb-2">
+          <button class="btn btn-warning btn-sm" onclick="manageFiles('archive')">
+            <i class="bi bi-archive"></i> Archive Selected (Rename)
+          </button>
+          <button class="btn btn-danger btn-sm" onclick="manageFiles('delete')">
+            <i class="bi bi-trash"></i> Delete Selected
+          </button>
+        </div>
+
+        <div class="card">
+          <div class="card-body p-0 table-scroll">
+            <table class="table table-striped mb-0 table-sm">
+              <thead class="table-light sticky-top">
+                <tr>
+                  <th width="40"><input type="checkbox" onchange="toggleAll(this, '.file-check')"></th>
+                  <th>File Name</th>
+                  <th>Owner</th>
+                  <th>Modified</th>
+                  <th>Size</th>
+                  <th>Type</th>
+                </tr>
+              </thead>
+              <tbody id="driveTableBody">
+                <tr><td colspan="6" class="text-center text-muted py-3">Select a date to find files.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
     </div>
   </div>
-</div>
 
-<script>
-  const setLoader = (show, text = "處理中...") => {
-    document.getElementById('loader').style.display = show ? 'flex' : 'none';
-    document.getElementById('loaderText').innerText = text;
-  };
-
-  window.onload = initOUs;
-
-  function initOUs() {
-    setLoader(true, "正在讀取組織單位...");
-    google.script.run.withSuccessHandler(ous => {
-      setLoader(false);
-      const sourceSelect = document.getElementById('ouSelect');
-      const targetSelect = document.getElementById('targetOuSelect');
-      const classroomOuSelect = document.getElementById('classroomOuSelect');
-      const ownerOuSelect = document.getElementById('ownerOuSelect');
-      let options = '<option value="">-- 全域搜尋 --</option>';
-      ous.forEach(path => options += `<option value="${path}">${path}</option>`);
-      sourceSelect.innerHTML = options;
-      targetSelect.innerHTML = '<option value="">-- 目標 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 --');
-      classroomOuSelect.innerHTML = '<option value="">-- 請選擇 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 OU --');
-      ownerOuSelect.innerHTML = '<option value="">-- 請選擇 OU --</option>' + options.replace('-- 全域搜尋 --', '-- 請選擇 OU --');
-      if (ous.length) {
-        ownerOuSelect.value = ous[0];
-        loadOwnerCandidates();
-      }
+  <!-- JavaScript Logic -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // --- GLOBAL UTILS ---
+    window.onload = function() {
+      // Init Drive Date to 1 year ago by default
+      const d = new Date();
+      d.setFullYear(d.getFullYear() - 1);
+      document.getElementById('driveFilterDate').value = d.toISOString().split('T')[0];
+      
+      // Load initial data
       loadCourses();
-    }).withFailureHandler(err => { setLoader(false); alert(err.message); }).getDomainOUs();
-  }
-
-  function setupTrigger() {
-    setLoader(true, "正在設定排程...");
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); })
-      .withFailureHandler(err => {
-        setLoader(false);
-        alert("權限錯誤：請先關閉視窗，回到 Apps Script 編輯器手動執行一次 installTrigger 函式來授權權限。");
-      }).installTrigger();
-  }
-
-  function syncSuspended() {
-    if (!confirm("這將找出目前網域內「所有」已停權的帳號，並將其加入 3 個月刪除排程。確定嗎？")) return;
-    setLoader(true, "正在同步停權帳號...");
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); }).syncSuspendedToQueue();
-  }
-
-  function manualCleanup() {
-    setLoader(true, "正在清理過期帳號...");
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); }).checkDeletionQueue();
-  }
-
-  function toggleDateInput(checkbox) {
-    const dateInput = document.getElementById('userDateCutoff');
-    dateInput.disabled = checkbox.checked;
-    if (checkbox.checked) dateInput.value = "";
-  }
-
-  function loadUsers() {
-    const ou = document.getElementById('ouSelect').value;
-    const neverLogin = document.getElementById('neverLoginOnly').checked;
-    let date = document.getElementById('userDateCutoff').value;
-    if (neverLogin) date = "NEVER_LOGIN";
-    else if (!date) return alert("請選擇篩選日期或勾選「從未登入」。");
-    setLoader(true, "正在讀取名單...");
-    google.script.run.withSuccessHandler(data => { setLoader(false); renderUserTable(data); }).getFilteredUsers(ou, date);
-  }
-
-  function renderUserTable(data) {
-    const container = document.getElementById('userResultArea');
-    const actionBtn = document.getElementById('userActionButtons');
-    document.getElementById('userCount').innerText = data.length > 0 ? `(${data.length} 位)` : "";
-    if (!data.length) {
-      container.innerHTML = '<p class="text-center p-4">查無使用者。</p>';
-      actionBtn.classList.add('d-none');
-      return;
-    }
-    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllUsers"></th><th>使用者</th><th>最後登入</th></tr></thead><tbody>`;
-    data.forEach(u => {
-      const suspendedBadge = u.suspended ? '<span class="badge-suspended ms-1">已停權</span>' : '';
-      html += `<tr><td><input type="checkbox" class="user-cb" value="${u.email}"></td><td><div><strong>${u.name}</strong>${suspendedBadge}</div><span class="text-muted" style="font-size:0.7rem">${u.email}</span></td><td>${u.lastLogin}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    container.innerHTML = html;
-    actionBtn.classList.remove('d-none');
-    document.getElementById('selectAllUsers').onclick = (e) => document.querySelectorAll('.user-cb').forEach(cb => cb.checked = e.target.checked);
-  }
-
-  function bulkSuspend() {
-    const selected = getSelectedValues('.user-cb');
-    if (!selected.length) return alert("請先勾選使用者。");
-    if (!confirm(`確定要停權這 ${selected.length} 位使用者？他們將在 3 個月後被系統永久刪除。`)) return;
-    setLoader(true, "處理停權中...");
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadUsers(); }).processUserSuspension(selected);
-  }
-
-  function bulkMove() {
-    const selected = getSelectedValues('.user-cb');
-    const targetOU = document.getElementById('targetOuSelect').value;
-    if (!selected.length || !targetOU) return alert("請選擇使用者及目標組織。");
-    setLoader(true, "移動中...");
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadUsers(); }).moveUsersToOU(selected, targetOU);
-  }
-
-  function loadFiles() {
-    const date = document.getElementById('fileDateCutoff').value;
-    if (!date) return alert("請選擇日期。");
-    setLoader(true, "掃描檔案中...");
-    google.script.run.withSuccessHandler(data => { setLoader(false); renderFileTable(data); }).getOldFiles(date);
-  }
-
-  function renderFileTable(data) {
-    const container = document.getElementById('fileResultArea');
-    const actionBtn = document.getElementById('fileActionButtons');
-    if (!data.length) {
-      container.innerHTML = '<p class="text-center p-4">查無過期檔案。</p>';
-      actionBtn.classList.add('d-none');
-      return;
-    }
-    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllFiles"></th><th>項目</th><th>修改時間</th></tr></thead><tbody>`;
-    data.forEach(f => {
-      const typeBadge = f.isFolder ? '<span class="badge badge-folder me-1">資料夾</span>' : '';
-      html += `<tr><td><input type="checkbox" class="file-cb" value="${f.id}"></td><td><div class="d-flex align-items-center">${typeBadge} <a href="${f.link}" target="_blank" class="text-truncate" style="max-width:140px;">${f.name}</a></div><small class="text-muted d-block" style="font-size:0.7rem">擁有者: ${f.owner}</small></td><td>${f.modified}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    container.innerHTML = html;
-    actionBtn.classList.remove('d-none');
-    document.getElementById('selectAllFiles').onclick = (e) => document.querySelectorAll('.file-cb').forEach(cb => cb.checked = e.target.checked);
-  }
-
-  function bulkFileAction(action) {
-    const selected = getSelectedValues('.file-cb');
-    if (!selected.length) return alert("請先勾選檔案。");
-    setLoader(true, `執行${action === 'delete' ? '刪除' : '封存'}中...`);
-    google.script.run.withSuccessHandler(msg => { setLoader(false); alert(msg); loadFiles(); }).manageFiles(selected, action);
-  }
-
-  function getSelectedValues(selector) { return Array.from(document.querySelectorAll(selector + ':checked')).map(cb => cb.value); }
-
-  function createCourse() {
-    const payload = {
-      name: document.getElementById('courseName').value.trim(),
-      section: document.getElementById('courseSection').value.trim(),
-      description: document.getElementById('courseDesc').value.trim(),
-      ownerEmail: document.getElementById('courseOwnerSelect').value.trim()
+      
+      // Load OUs for all dropdowns immediately on page load
+      initOUs();
     };
-    if (!payload.name) return alert("請輸入課程名稱。");
-    setLoader(true, "建立課程中...");
-    google.script.run.withSuccessHandler(() => {
-      setLoader(false);
-      document.getElementById('courseName').value = "";
-      document.getElementById('courseSection').value = "";
-      document.getElementById('courseDesc').value = "";
-      document.getElementById('courseOwnerSelect').value = "me";
-      loadCourses();
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).createClassroomCourse(payload);
-  }
 
-  function loadCourses() {
-    setLoader(true, "載入課程中...");
-    google.script.run.withSuccessHandler(data => {
-      setLoader(false);
-      renderCourseTable(data);
-      refreshCourseSelect(data);
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).listCreatedClassroomCourses();
-  }
-
-  function renderCourseTable(data) {
-    const container = document.getElementById('courseResultArea');
-    if (!data.length) {
-      container.innerHTML = '<p class="text-center p-4">尚無課程紀錄。</p>';
-      return;
+    function setLoader(isLoading, text) {
+      document.getElementById('loadingText').innerText = text || "Processing...";
+      document.getElementById('loadingOverlay').style.display = isLoading ? 'flex' : 'none';
     }
-    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllCourses"></th><th>課程</th><th>管理</th></tr></thead><tbody>`;
-    data.forEach(c => {
-      const section = c.section ? `<div class="text-muted xsmall-text">${c.section}</div>` : '';
-      const owner = c.owner ? `<div class="xsmall-text">Owner: ${c.owner}</div>` : '<div class="xsmall-text text-muted">Owner: -</div>';
-      const teacher = c.teacher ? `<div class="xsmall-text">Teacher: ${c.teacher}</div>` : '<div class="xsmall-text text-muted">Teacher: -</div>';
-      html += `<tr><td><input type="checkbox" class="course-cb" value="${c.id}"></td><td><div><strong>${c.name}</strong>${section}</div><div class="text-muted xsmall-text">${c.id}</div></td><td>${owner}${teacher}</td></tr>`;
-    });
-    html += '</tbody></table>';
-    container.innerHTML = html;
-    document.getElementById('selectAllCourses').onclick = (e) => document.querySelectorAll('.course-cb').forEach(cb => cb.checked = e.target.checked);
-  }
 
-  function refreshCourseSelect(data) {
-    const select = document.getElementById('classroomCourseSelect');
-    if (!data.length) {
-      select.innerHTML = '<option value="">尚無課程</option>';
-      return;
+    function toggleAll(source, selector) {
+      document.querySelectorAll(selector).forEach(cb => cb.checked = source.checked);
     }
-    let options = '<option value="">-- 請選擇課程 --</option>';
-    data.forEach(c => options += `<option value="${c.id}">${c.name}${c.section ? ' (' + c.section + ')' : ''}</option>`);
-    select.innerHTML = options;
-  }
 
-  function deleteSelectedCourses() {
-    const selected = getSelectedValues('.course-cb');
-    if (!selected.length) return alert("請先勾選課程。");
-    if (!confirm(`確定要刪除 ${selected.length} 門課程？`)) return;
-    setLoader(true, "刪除課程中...");
-    let processed = 0;
-    selected.forEach(courseId => {
-      google.script.run.withSuccessHandler(() => {
-        processed++;
-        if (processed === selected.length) {
-          setLoader(false);
-          loadCourses();
-        }
+    function getCheckedValues(selector) {
+      return Array.from(document.querySelectorAll(selector + ':checked')).map(cb => cb.value);
+    }
+
+    // --- NEW: CENTRALIZED OU LOADING ---
+    function initOUs() {
+      // setLoader(true, "Loading Organization Units..."); // Optional: silent load to avoid blocking UI
+      google.script.run.withSuccessHandler(ous => {
+        // setLoader(false);
+        const options = ous.map(ou => `<option value="${ou}">${ou}</option>`).join('');
+
+        // 1. User Filter (User Lifecycle Tab)
+        const userFilter = document.getElementById('ouSelect');
+        userFilter.innerHTML = '<option value="" disabled selected>Select OU...</option><option value="ALL">All OUs</option>' + options;
+
+        // 2. Teacher Filter (Classroom Tab)
+        const teacherFilter = document.getElementById('teacherOuFilter');
+        teacherFilter.innerHTML = '<option value="">Search Teacher by OU...</option><option value="ALL">All OUs</option>' + options;
+
+        // 3. Student Source (Classroom Tab)
+        const studentSource = document.getElementById('classOuSelect');
+        studentSource.innerHTML = '<option value="" disabled selected>Select OU...</option>' + options;
+
+        // 4. Target Move (User Lifecycle Tab)
+        const targetMove = document.getElementById('targetOuSelect');
+        if(targetMove) targetMove.innerHTML = '<option value="" disabled selected>Select Target OU...</option>' + options;
+
       }).withFailureHandler(err => {
-        processed++;
-        if (processed === selected.length) {
-          setLoader(false);
-          alert("部分課程刪除失敗，請查看 Classroom Logs。");
-          loadCourses();
+        // setLoader(false);
+        console.error("Failed to load OUs: " + err.message);
+        // Fallback to alert if critical
+      }).getDomainOUs();
+    }
+
+    // --- CLASSROOM FUNCTIONS ---
+
+    function loadCourses() {
+      const tbody = document.getElementById('courseTableBody');
+      const enrollSelect = document.getElementById('enrollCourseSelect');
+      
+      google.script.run.withSuccessHandler(courses => {
+        tbody.innerHTML = '';
+        enrollSelect.innerHTML = '<option value="" disabled selected>Select a course...</option>';
+
+        if (courses.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3">No courses found.</td></tr>';
+          return;
         }
-      }).deleteClassroomCourse(courseId);
-    });
-  }
 
-  function loadOuMembers() {
-    const ouPath = document.getElementById('classroomOuSelect').value;
-    if (!ouPath) return alert("請選擇 OU。");
-    setLoader(true, "讀取 OU 成員...");
-    google.script.run.withSuccessHandler(data => {
-      setLoader(false);
-      renderOuMembers(data);
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).getOuMembers(ouPath);
-  }
-
-  function renderOuMembers(data) {
-    const container = document.getElementById('ouMemberArea');
-    if (!data.length) {
-      container.innerHTML = '<p class="text-center p-4">此 OU 無可用成員。</p>';
-      return;
+        courses.forEach(c => {
+          tbody.innerHTML += `
+            <tr>
+              <td><strong>${c.name}</strong></td>
+              <td>${c.section}</td>
+              <td><code class="text-primary">${c.enrollmentCode || 'N/A'}</code></td>
+              <td class="text-end">
+                <button class="btn btn-outline-danger btn-sm" onclick="deleteCourse('${c.id}')" title="Delete Course">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </td>
+            </tr>
+          `;
+          enrollSelect.innerHTML += `<option value="${c.id}">${c.name} (${c.section})</option>`;
+        });
+      }).withFailureHandler(err => {
+         tbody.innerHTML = `<tr><td colspan="4" class="text-danger">Error: ${err.message}</td></tr>`;
+      }).listCourses();
     }
-    let html = `<table class="table table-hover table-sm small mb-0"><thead class="table-light sticky-top"><tr><th><input type="checkbox" id="selectAllMembers"></th><th>成員</th></tr></thead><tbody>`;
-    data.forEach(m => {
-      html += `<tr><td><input type="checkbox" class="member-cb" value="${m.email}"></td><td><div><strong>${m.name}</strong></div><div class="text-muted xsmall-text">${m.email}</div></td></tr>`;
-    });
-    html += '</tbody></table>';
-    container.innerHTML = html;
-    document.getElementById('selectAllMembers').onclick = (e) => document.querySelectorAll('.member-cb').forEach(cb => cb.checked = e.target.checked);
-  }
 
-  function addMembersToCourse() {
-    const courseId = document.getElementById('classroomCourseSelect').value;
-    const members = getSelectedValues('.member-cb');
-    if (!courseId) return alert("請選擇課程。");
-    if (!members.length) return alert("請先勾選成員。");
-    setLoader(true, "加入成員中...");
-    google.script.run.withSuccessHandler(result => {
-      setLoader(false);
-      if (result.errors && result.errors.length) {
-        alert(result.message + "\n" + result.errors.slice(0, 5).join("\n"));
-      } else {
-        alert(result.message);
-      }
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).addStudentsToCourse(courseId, members);
-  }
-
-  function loadOwnerCandidates() {
-    const ouPath = document.getElementById('ownerOuSelect').value;
-    const ownerSelect = document.getElementById('courseOwnerSelect');
-    if (!ouPath) {
-      ownerSelect.innerHTML = '<option value="me">使用目前帳號</option>';
-      return;
+    function createCourse() {
+      const name = document.getElementById('newCourseName').value;
+      const section = document.getElementById('newCourseSection').value;
+      const teacherEmail = document.getElementById('newCourseTeacher').value;
+      
+      if (!name) return alert("Course Name is required.");
+      
+      setLoader(true, "Creating Course...");
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        alert(`Course Created!\nName: ${res.name}\nCode: ${res.enrollmentCode}`);
+        document.getElementById('newCourseName').value = '';
+        document.getElementById('newCourseSection').value = '';
+        loadCourses();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Creation Failed: " + err.message);
+      }).createClassroomCourse({ name, section, teacherEmail });
     }
-    setLoader(true, "讀取 OU 成員...");
-    google.script.run.withSuccessHandler(data => {
-      setLoader(false);
-      let options = '<option value="me">使用目前帳號</option>';
-      data.forEach(m => {
-        options += `<option value="${m.email}">${m.name} (${m.email})</option>`;
-      });
-      ownerSelect.innerHTML = options;
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).getOuMembers(ouPath);
-  }
 
-  function runClassroomTest() {
-    setLoader(true, "測試 Classroom API...");
-    google.script.run.withSuccessHandler(msg => {
-      setLoader(false);
-      alert(msg);
-    }).withFailureHandler(err => {
-      setLoader(false);
-      alert(err.message);
-    }).runClassroomDiagnostics();
-  }
-</script>
+    function deleteCourse(id) {
+      if (!confirm("Are you sure? This will delete the course permanently.")) return;
+      setLoader(true, "Deleting Course...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+        loadCourses();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Delete Failed: " + err.message);
+      }).deleteClassroomCourse(id);
+    }
+
+    function loadTeacherCandidates(ouPath) {
+      if (!ouPath) return;
+      setLoader(true, "Finding teachers in OU...");
+      google.script.run.withSuccessHandler(users => {
+        setLoader(false);
+        const sel = document.getElementById('newCourseTeacher');
+        sel.innerHTML = '<option value="me">None (Owner only)</option>';
+        if (users.length === 0) {
+           sel.innerHTML += '<option disabled>No users in this OU</option>';
+        } else {
+           users.forEach(u => {
+             sel.innerHTML += `<option value="${u.email}">${u.name} (${u.email})</option>`;
+           });
+        }
+      }).getFilteredUsers(ouPath, "ALL", null);
+    }
+
+    function loadStudentsFromOu() {
+      const ou = document.getElementById('classOuSelect').value;
+      // Fixed: Check specifically for empty string or null, as "Select OU..." text is no longer the value
+      if (!ou) return alert("Please select an OU first.");
+      
+      setLoader(true, `Loading students from ${ou}...`);
+      google.script.run.withSuccessHandler(users => {
+        setLoader(false);
+        const container = document.getElementById('studentCheckList');
+        container.innerHTML = '';
+        
+        if (users.length === 0) {
+          container.innerHTML = '<div class="text-center text-muted mt-3">No active students found in this OU.</div>';
+          return;
+        }
+
+        container.innerHTML = `
+          <div class="form-check border-bottom pb-2 mb-2">
+            <input class="form-check-input" type="checkbox" onchange="toggleAll(this, '.student-check')">
+            <label class="form-check-label fw-bold">Select All (${users.length})</label>
+          </div>
+        `;
+
+        users.forEach(u => {
+          container.innerHTML += `
+            <div class="form-check">
+              <input class="form-check-input student-check" type="checkbox" value="${u.email}" id="stu_${u.email}">
+              <label class="form-check-label small" for="stu_${u.email}">
+                ${u.name} <span class="text-muted">(${u.email})</span>
+              </label>
+            </div>
+          `;
+        });
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert(err.message);
+      }).getFilteredUsers(ou, "ALL", null);
+    }
+
+    function enrollCheckedStudents() {
+      const courseId = document.getElementById('enrollCourseSelect').value;
+      const emails = getCheckedValues('.student-check');
+      
+      if (!courseId) return alert("Please select a target course.");
+      if (emails.length === 0) return alert("Please check at least one student.");
+      
+      setLoader(true, `Enrolling ${emails.length} students...`);
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        alert(res.message);
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Enrollment Error: " + err.message);
+      }).addStudentsToCourse(courseId, emails);
+    }
+
+    // --- USER MANAGEMENT FUNCTIONS ---
+
+    function toggleDatePicker() {
+      const status = document.getElementById('loginStatusSelect').value;
+      document.getElementById('filterDate').disabled = (status !== 'BEFORE_DATE');
+    }
+
+    function filterUsers() {
+      const ou = document.getElementById('ouSelect').value;
+      const condition = document.getElementById('loginStatusSelect').value;
+      const date = document.getElementById('filterDate').value;
+      
+      if (!ou) return alert("Please select an OU.");
+      if (condition === 'BEFORE_DATE' && !date) return alert("Please select a date.");
+      
+      setLoader(true, "Searching Directory...");
+      google.script.run.withSuccessHandler(users => {
+        setLoader(false);
+        document.getElementById('userCount').innerText = users.length;
+        const tbody = document.getElementById('userTableBody');
+        tbody.innerHTML = '';
+        
+        if (users.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="text-center py-3">No users found.</td></tr>';
+          return;
+        }
+
+        users.forEach(u => {
+          const badge = u.suspended 
+            ? '<span class="badge bg-danger">Suspended</span>' 
+            : '<span class="badge bg-success">Active</span>';
+            
+          tbody.innerHTML += `
+            <tr>
+              <td><input type="checkbox" class="user-check" value="${u.email}"></td>
+              <td>${u.name}</td>
+              <td>${u.email}</td>
+              <td>${u.lastLogin}</td>
+              <td>${badge}</td>
+              <td><small class="text-muted">${u.org}</small></td>
+            </tr>`;
+        });
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Search Failed: " + err.message);
+      }).getFilteredUsers(ou, condition, date);
+    }
+
+    function suspendSelected() {
+      const emails = getCheckedValues('.user-check');
+      if (emails.length === 0) return alert("No users selected.");
+      
+      if (!confirm(`WARNING: Suspend ${emails.length} users?\nThey will be queued for deletion in 3 months.`)) return;
+      
+      setLoader(true, "Suspending & Queuing...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+        filterUsers();
+      }).processUserSuspension(emails);
+    }
+
+    function bulkMoveUsers() {
+      const emails = getCheckedValues('.user-check');
+      const targetOU = document.getElementById('targetOuSelect').value;
+
+      if (emails.length === 0) return alert("Please select users to move.");
+      if (!targetOU) return alert("Please select a Target OU from the dropdown.");
+
+      if (!confirm(`Confirm move ${emails.length} users to:\n${targetOU}`)) return;
+
+      setLoader(true, "Moving Users...");
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        alert(res.message);
+        filterUsers();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Move Failed: " + err.message);
+      }).moveUsersToOU(emails, targetOU);
+    }
+
+    function syncSuspended() {
+      setLoader(true, "Syncing...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+      }).syncSuspendedToQueue();
+    }
+
+    function installTrigger() {
+      setLoader(true, "Installing Trigger...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+      }).installTrigger();
+    }
+
+    // --- DRIVE AUDIT FUNCTIONS ---
+
+    function auditDrive() {
+      const dateStr = document.getElementById('driveFilterDate').value;
+      if (!dateStr) return alert("Please select a date.");
+      
+      setLoader(true, "Auditing Drive (This may take a while)...");
+      google.script.run.withSuccessHandler(files => {
+        setLoader(false);
+        const tbody = document.getElementById('driveTableBody');
+        tbody.innerHTML = '';
+        
+        if (files.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="6" class="text-center py-3">No outdated files found.</td></tr>';
+          return;
+        }
+
+        files.forEach(f => {
+          const icon = f.isFolder ? '<i class="bi bi-folder-fill text-warning"></i>' : '<i class="bi bi-file-earmark-text"></i>';
+          tbody.innerHTML += `
+            <tr>
+              <td><input type="checkbox" class="file-check" value="${f.id}"></td>
+              <td>${icon} <a href="${f.link}" target="_blank" class="text-decoration-none">${f.name}</a></td>
+              <td><small>${f.owner}</small></td>
+              <td>${f.modified}</td>
+              <td>${f.size}</td>
+              <td>${f.isFolder ? 'Folder' : 'File'}</td>
+            </tr>`;
+        });
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Audit Failed: " + err.message);
+      }).findOutdatedFiles(dateStr); // Fixed sort
+    }
+
+    function manageFiles(action) {
+      const ids = getCheckedValues('.file-check');
+      if (ids.length === 0) return alert("Please select files first.");
+      
+      const confirmMsg = action === 'delete' 
+        ? `PERMANENTLY DELETE ${ids.length} items?` 
+        : `Archive (Rename) ${ids.length} items?`;
+        
+      if (!confirm(confirmMsg)) return;
+
+      setLoader(true, `${action === 'delete' ? 'Deleting' : 'Archiving'} items...`);
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+        auditDrive(); // Refresh list
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Operation Failed: " + err.message);
+      }).manageFiles(ids, action);
+    }
+
+    function runConnectivityTest() {
+      setLoader(true, "Testing...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Connection Error: " + err.message);
+      }).testApiConnection();
+    }
+  </script>
 </body>
 </html>

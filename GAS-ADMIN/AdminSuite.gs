@@ -1,195 +1,252 @@
 /**
- * Project: Admin Management Suite
- * Version: 1.5.2
- * Updated: 2026-01-13 (Timezone UTC+8)
- * Description: Added OAuth Scopes to fix Trigger permissions.
- * * 必要的權限授權 (如果手動執行失敗，請在「服務」中已啟用 Admin SDK)：
- * @OnlyCurrentDoc
+ * Project: Domain Admin Suite
+ * Version: 1.8.2
+ * Updated: 2026-01-15 (Timezone UTC+8)
+ * Description: Comprehensive Admin System (Classroom, Directory, Drive).
+ * * CORE FEATURES:
+ * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU
+ * 2. Directory: Inactive User Detection, Suspend, Move OU
+ * 3. Lifecycle: Automated deletion of suspended accounts after 3 months
+ * 4. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive
+ * 5. Logging: Centralized logging to Spreadsheet (UTC+8)
+ * * * REQUIRED SCOPES:
  * @include https://www.googleapis.com/auth/script.scriptapp
- * Classroom scopes:
+ * @include https://www.googleapis.com/auth/spreadsheets
  * @include https://www.googleapis.com/auth/classroom.courses
  * @include https://www.googleapis.com/auth/classroom.rosters
+ * @include https://www.googleapis.com/auth/classroom.profile.emails
+ * @include https://www.googleapis.com/auth/admin.directory.user
+ * @include https://www.googleapis.com/auth/admin.directory.orgunit
+ * @include https://www.googleapis.com/auth/drive
  */
 
-const APP_VERSION = "1.5.2";
-const TZ = "GMT+8";
-const CLASSROOM_COURSE_SHEET = "Classroom_Courses";
-const CLASSROOM_LOG_SHEET = "Classroom_Logs";
-const CLASSROOM_SPREADSHEET_ID_PROPERTY = "CLASSROOM_SPREADSHEET_ID";
+const APP_VERSION = "1.8.2";
+const CONFIG = {
+  TIME_ZONE: "GMT+8",
+  SHEET_ID_DEFAULT: "1S81cr3qiCyU2BlkvHDAb0TJp5Dy2O9A05u3FoIoKCvk",
+  SHEET_NAME_COURSES: "Classroom_Courses",
+  SHEET_NAME_LOGS: "Classroom_Logs",
+  SHEET_NAME_ACTIONS: "Action_Logs",
+  PROP_SHEET_ID: "CLASSROOM_SPREADSHEET_ID"
+};
 
 /**
- * Standard Web App Entry Point
+ * Serves the Web App UI.
  */
-function doGet() {
-  return HtmlService.createTemplateFromFile('Index')
-    .evaluate()
-    .setTitle('Domain Admin Suite v' + APP_VERSION)
+function doGet(e) {
+  const template = HtmlService.createTemplateFromFile('index');
+  template.appVersion = APP_VERSION;
+  
+  return template.evaluate()
+    .setTitle(`Domain Admin Suite v${APP_VERSION}`)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
 /**
- * 解決權限問題：
- * 如果在執行此 function 時遇到「沒有呼叫 ScriptApp.getProjectTriggers 的權限」，
- * 請在 Apps Script 編輯器中「手動執行一次」此 function。
- * 系統會彈出授權視窗，請點選「進階」->「前往 (不安全)」並允許所有權限。
+ * Gets the connected Spreadsheet object.
  */
-function installTrigger() {
+function getDBSpreadsheet_() {
+  const props = PropertiesService.getScriptProperties();
+  const storedId = props.getProperty(CONFIG.PROP_SHEET_ID);
+  const targetId = storedId || CONFIG.SHEET_ID_DEFAULT;
+  
   try {
-    const triggers = ScriptApp.getProjectTriggers();
-    triggers.forEach(t => {
-      if (t.getHandlerFunction() === 'checkDeletionQueue') ScriptApp.deleteTrigger(t);
-    });
-
-    ScriptApp.newTrigger('checkDeletionQueue')
-      .timeBased()
-      .atHour(1)
-      .everyDays(1)
-      .create();
-
-    return "每日自動刪除觸發器已成功安裝。";
+    return SpreadsheetApp.openById(targetId);
   } catch (e) {
-    throw new Error("授權失敗或權限不足：" + e.message);
+    console.error("Could not open spreadsheet: " + targetId);
+    return SpreadsheetApp.getActiveSpreadsheet(); 
   }
 }
 
 /**
- * 同步現有的停權使用者進入刪除
+ * Writes a general log entry to the spreadsheet.
  */
-function syncSuspendedToQueue() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let logSheet = ss.getSheetByName("Action_Logs") || ss.insertSheet("Action_Logs");
-
-  if (logSheet.getLastRow() === 0) {
-    logSheet.appendRow(["Action Timestamp", "User Email", "Status", "Scheduled Deletion Date", "Version"]);
-  }
-
-  const existingLogs = logSheet.getDataRange().getValues().map(row => row[1]);
-  const deletionDate = new Date();
-  deletionDate.setMonth(deletionDate.getMonth() + 3);
-  const formattedDeletionDate = Utilities.formatDate(deletionDate, TZ, "yyyy-MM-dd");
-
-  let syncedCount = 0;
-  let pageToken = null;
-
+function logSystemAction_(action, target, status, detail) {
   try {
-    do {
-      const response = AdminDirectory.Users.list({
-        customer: 'my_customer',
-        query: "isSuspended=true",
-        maxResults: 500,
-        pageToken: pageToken
-      });
-      const users = response.users || [];
+    const ss = getDBSpreadsheet_();
+    let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_LOGS);
+    if (!sheet) {
+      sheet = ss.insertSheet(CONFIG.SHEET_NAME_LOGS);
+      sheet.appendRow(["Timestamp (UTC+8)", "Action", "Target", "Status", "Detail", "Version"]);
+      sheet.setFrozenRows(1);
+    }
 
-      users.forEach(user => {
-        if (!existingLogs.includes(user.primaryEmail)) {
-          logSheet.appendRow([new Date(), user.primaryEmail, "Suspended", formattedDeletionDate, "Sync-" + APP_VERSION]);
-          syncedCount++;
-        }
-      });
-      pageToken = response.nextPageToken;
-    } while (pageToken);
-
-    return `同步完成。已將 ${syncedCount} 個現有的停權帳號加入 3 個月刪除排程。`;
+    const timestamp = Utilities.formatDate(new Date(), CONFIG.TIME_ZONE, "yyyy-MM-dd HH:mm:ss");
+    sheet.appendRow([timestamp, action, target, status, detail, APP_VERSION]);
+    
+    if (sheet.getLastRow() > 2000) {
+      sheet.deleteRows(2, sheet.getLastRow() - 2000);
+    }
   } catch (e) {
-    throw new Error("同步錯誤: " + e.message);
+    console.error("Logging failed", e);
   }
 }
 
+/* =========================================
+   FEATURE 1: CLASSROOM MANAGEMENT
+   ========================================= */
+
 /**
- * 核心功能：掃描 'Action_Logs' 並刪除到期的帳號
+ * Creates a new Course and optionally invites a teacher.
  */
-function checkDeletionQueue() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const logSheet = ss.getSheetByName("Action_Logs");
-  if (!logSheet) return "找不到紀錄表。";
+function createClassroomCourse(payload) {
+  if (!payload || !payload.name) throw new Error("Course Name is required.");
+  
+  // 1. Fixed Course Owner: Always "me" (The Admin executing the script)
+  const coursePayload = {
+    name: payload.name,
+    section: payload.section || "",
+    description: payload.description || "",
+    ownerId: "me", 
+    courseState: "ACTIVE"
+  };
 
-  const data = logSheet.getDataRange().getValues();
-  if (data.length <= 1) return "沒有待處理的紀錄。";
-
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  let deletedCount = 0;
-  let rows = [data[0]];
-
-  for (let i = 1; i < data.length; i++) {
-    const row = data[i];
-    const email = row[1];
-    const status = row[2];
-    const scheduledDate = new Date(row[3]);
-
-    if (status === "Suspended" && scheduledDate <= today) {
+  try {
+    // Create Course
+    const created = Classroom.Courses.create(coursePayload);
+    
+    // 2. Add Teacher: If a specific teacher is selected (and it's not the admin 'me')
+    let teacherStatus = "Owner only (Admin)";
+    if (payload.teacherEmail && payload.teacherEmail !== "me") {
       try {
-        AdminDirectory.Users.remove(email);
-        row[2] = "Deleted (Auto)";
-        row[0] = new Date();
-        deletedCount++;
+        // This adds the user as a *Teacher* to the course
+        Classroom.Courses.Teachers.create({ userId: payload.teacherEmail }, created.id);
+        teacherStatus = `Teacher added: ${payload.teacherEmail}`;
       } catch (e) {
-        if (e.message.indexOf("notFound") > -1) row[2] = "Deleted (Manual/Ext)";
+        teacherStatus = `Created, but failed to add teacher: ${e.message}`;
       }
     }
-    rows.push(row);
-  }
 
-  logSheet.getRange(1, 1, rows.length, data[0].length).setValues(rows);
-  return `自動清理完成。共刪除 ${deletedCount} 個帳號。`;
+    // 3. Log to Sheet
+    const ss = getDBSpreadsheet_();
+    let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_COURSES);
+    if (!sheet) {
+      sheet = ss.insertSheet(CONFIG.SHEET_NAME_COURSES);
+      sheet.appendRow(["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"]);
+    }
+    // Record both the Owner (created.ownerId) and the assigned Teacher (payload.teacherEmail)
+    sheet.appendRow([created.id, created.name, created.section, created.ownerId, payload.teacherEmail || "", new Date()]);
+    
+    logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", `Name: ${created.name}, ${teacherStatus}`);
+    
+    return { 
+      id: created.id, 
+      name: created.name, 
+      section: created.section,
+      enrollmentCode: created.enrollmentCode
+    };
+
+  } catch (e) {
+    logSystemAction_("CREATE_COURSE", payload.name, "FAILED", e.message);
+    throw new Error("Create Failed: " + e.message);
+  }
 }
 
 /**
- * 停權多個使用者並紀錄 3 個月後刪除
+ * Lists courses and merges with local DB data.
  */
-function processUserSuspension(emails) {
-  if (!emails || emails.length === 0) return "未選擇使用者。";
+function listCourses() {
+  try {
+    const response = Classroom.Courses.list({ courseStates: ['ACTIVE'], pageSize: 50 });
+    const courses = response.courses || [];
+    
+    logSystemAction_("LIST_COURSES", "N/A", "SUCCESS", `Retrieved ${courses.length} courses`);
+    return courses.map(c => ({ 
+      id: c.id, 
+      name: c.name, 
+      section: c.section || "", 
+      enrollmentCode: c.enrollmentCode,
+      ownerId: c.ownerId 
+    }));
+  } catch (err) {
+    logSystemAction_("LIST_COURSES", "N/A", "ERROR", err.message);
+    throw err;
+  }
+}
 
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  let logSheet = ss.getSheetByName("Action_Logs") || ss.insertSheet("Action_Logs");
+/**
+ * Deletes a course.
+ */
+function deleteClassroomCourse(courseId) {
+  if (!courseId) throw new Error("Course ID required.");
+  try {
+    Classroom.Courses.remove(courseId);
+    
+    // Sync Sheet: Mark as deleted or remove row
+    const ss = getDBSpreadsheet_();
+    const sheet = ss.getSheetByName(CONFIG.SHEET_NAME_COURSES);
+    if (sheet) {
+      const data = sheet.getDataRange().getValues();
+      for (let i = 1; i < data.length; i++) {
+        if (String(data[i][0]) === String(courseId)) {
+          sheet.deleteRow(i + 1);
+          break;
+        }
+      }
+    }
+    
+    logSystemAction_("DELETE_COURSE", courseId, "SUCCESS", "Course deleted");
+    return `Course ${courseId} deleted successfully.`;
+  } catch (e) {
+    logSystemAction_("DELETE_COURSE", courseId, "FAILED", e.message);
+    throw new Error("Delete Failed: " + e.message);
+  }
+}
 
-  const deletionDate = new Date();
-  deletionDate.setMonth(deletionDate.getMonth() + 3);
-  const formattedDeletionDate = Utilities.formatDate(deletionDate, TZ, "yyyy-MM-dd");
-
-  emails.forEach(email => {
+function addStudentsToCourse(courseId, studentEmails) {
+  if (!studentEmails || studentEmails.length === 0) return { message: "No students provided." };
+  
+  const results = { success: [], errors: [] };
+  studentEmails.forEach(email => {
     try {
-      AdminDirectory.Users.update({ suspended: true }, email);
-      logSheet.appendRow([new Date(), email, "Suspended", formattedDeletionDate, APP_VERSION]);
-    } catch (err) {
-      console.error("停權失敗: " + email, err);
+      Classroom.Courses.Students.create({ userId: email }, courseId);
+      results.success.push(email);
+    } catch (e) {
+      let msg = e.message;
+      if (msg.includes("ALREADY_EXISTS")) msg = "Already Enrolled";
+      results.errors.push(`${email}: ${msg}`);
     }
   });
-
-  return `已停權 ${emails.length} 個使用者。預計刪除日期：${formattedDeletionDate}`;
+  logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", `Success: ${results.success.length}, Errors: ${results.errors.length}`);
+  return { message: `Processed ${studentEmails.length} students.`, details: results };
 }
 
-/**
- * 獲取所有組織單位 (OU)
- */
+/* =========================================
+   FEATURE 2: USER MANAGEMENT (Admin SDK)
+   ========================================= */
+
 function getDomainOUs() {
   try {
     const response = AdminDirectory.Orgunits.list('my_customer', { type: 'all' });
-    const ous = response.organizationUnits || [];
-    return ous.map(ou => ou.orgUnitPath).sort();
-  } catch (e) { throw new Error("獲取 OU 失敗: " + e.message); }
+    return (response.organizationUnits || []).map(ou => ou.orgUnitPath).sort();
+  } catch (e) { 
+    throw new Error("Failed to fetch OUs: " + e.message); 
+  }
 }
 
 /**
- * 根據 OU 和準則過濾使用者
+ * Filter users by OU and Login Date condition.
  */
-function getFilteredUsers(ouPath, dateString) {
+function getFilteredUsers(ouPath, dateCondition, specificDate) {
   let allUsers = [];
   let pageToken = null;
-  const cutoffDate = (dateString && dateString !== "NEVER_LOGIN") ? new Date(dateString) : null;
+  const cutoffDate = (dateCondition === "BEFORE_DATE" && specificDate) ? new Date(specificDate) : null;
 
   try {
     do {
+      let queryParts = [];
+      if (ouPath && ouPath !== "ALL") queryParts.push(`orgUnitPath='${ouPath}'`);
+      const queryString = queryParts.join(" ");
+
       const options = {
         customer: 'my_customer',
-        query: ouPath ? `orgUnitPath='${ouPath}'` : "",
         maxResults: 500,
         pageToken: pageToken,
         viewType: 'admin_view'
       };
+      if (queryString) options.query = queryString;
+
       const response = AdminDirectory.Users.list(options);
       const users = response.users || [];
 
@@ -197,19 +254,19 @@ function getFilteredUsers(ouPath, dateString) {
         const lastLogin = user.lastLoginTime ? new Date(user.lastLoginTime) : null;
         let match = false;
 
-        if (dateString === "NEVER_LOGIN") {
-          if (!lastLogin) match = true;
-        } else if (!cutoffDate) {
-          match = true;
-        } else {
+        if (dateCondition === "NEVER_LOGIN") {
+          if (!lastLogin || user.lastLoginTime === "0") match = true;
+        } else if (dateCondition === "BEFORE_DATE" && cutoffDate) {
           if (lastLogin && lastLogin < cutoffDate) match = true;
+        } else {
+          match = true;
         }
 
         if (match) {
           allUsers.push({
             name: user.name.fullName,
             email: user.primaryEmail,
-            lastLogin: lastLogin ? Utilities.formatDate(lastLogin, TZ, "yyyy-MM-dd HH:mm") : "從未登入",
+            lastLogin: lastLogin ? Utilities.formatDate(lastLogin, CONFIG.TIME_ZONE, "yyyy-MM-dd HH:mm") : "Never Logged In",
             suspended: user.suspended,
             org: user.orgUnitPath
           });
@@ -217,277 +274,194 @@ function getFilteredUsers(ouPath, dateString) {
       });
       pageToken = response.nextPageToken;
     } while (pageToken);
+    
     return allUsers;
-  } catch (e) { throw new Error("User API 錯誤: " + e.message); }
+  } catch (e) { 
+    throw new Error("User API Error: " + e.message); 
+  }
 }
 
-/**
- * 將使用者移動至目標 OU
- */
 function moveUsersToOU(emails, targetOU) {
+  let count = 0;
+  let errors = [];
   emails.forEach(email => {
-    try { AdminDirectory.Users.update({ orgUnitPath: targetOU }, email); } catch (err) {}
+    try { 
+      AdminDirectory.Users.update({ orgUnitPath: targetOU }, email); 
+      count++;
+    } catch (err) { errors.push(email); }
   });
-  return `已將 ${emails.length} 個使用者移動至 ${targetOU}。`;
+  logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", `Moved: ${count}`);
+  return { message: `Moved ${count} users.`, errors: errors };
 }
 
-/**
- * 獲取雲端硬碟過期檔案
- */
-function getOldFiles(dateString) {
-  const rfcDate = dateString + "T00:00:00Z";
-  const query = `modifiedDate < '${rfcDate}' and trashed = false`;
-  const fileList = [];
+/* =========================================
+   FEATURE 3: LIFECYCLE AUTOMATION
+   ========================================= */
+
+function installTrigger() {
   try {
-    let response = Drive.Files.list({
-      q: query, maxResults: 150, orderBy: "modifiedDate desc",
-      supportsAllDrives: true, includeItemsFromAllDrives: true
+    const triggers = ScriptApp.getProjectTriggers();
+    triggers.forEach(t => { if (t.getHandlerFunction() === 'checkDeletionQueue') ScriptApp.deleteTrigger(t); });
+    ScriptApp.newTrigger('checkDeletionQueue').timeBased().atHour(1).everyDays(1).create();
+    return "Daily deletion trigger installed.";
+  } catch (e) { throw new Error("Auth failed: " + e.message); }
+}
+
+function processUserSuspension(emails) {
+  if (!emails || emails.length === 0) return "No users selected.";
+  const ss = getDBSpreadsheet_();
+  let logSheet = ss.getSheetByName(CONFIG.SHEET_NAME_ACTIONS);
+  if (!logSheet) {
+    logSheet = ss.insertSheet(CONFIG.SHEET_NAME_ACTIONS);
+    logSheet.appendRow(["Action Timestamp", "User Email", "Status", "Scheduled Deletion Date", "Version"]);
+  }
+  const deletionDate = new Date();
+  deletionDate.setMonth(deletionDate.getMonth() + 3);
+  const formattedDeletionDate = Utilities.formatDate(deletionDate, CONFIG.TIME_ZONE, "yyyy-MM-dd");
+  let count = 0;
+  emails.forEach(email => {
+    try {
+      AdminDirectory.Users.update({ suspended: true }, email);
+      logSheet.appendRow([new Date(), email, "Suspended", formattedDeletionDate, APP_VERSION]);
+      count++;
+    } catch (err) {}
+  });
+  logSystemAction_("SUSPEND_BATCH", "Batch", "SUCCESS", `Suspended ${count} users.`);
+  return `Suspended ${count} users. Deletion scheduled: ${formattedDeletionDate}.`;
+}
+
+function syncSuspendedToQueue() {
+  const ss = getDBSpreadsheet_();
+  let logSheet = ss.getSheetByName(CONFIG.SHEET_NAME_ACTIONS);
+  if (!logSheet) {
+    logSheet = ss.insertSheet(CONFIG.SHEET_NAME_ACTIONS);
+    logSheet.appendRow(["Action Timestamp", "User Email", "Status", "Scheduled Deletion Date", "Version"]);
+  }
+  const existingEmails = logSheet.getDataRange().getValues().slice(1).map(row => row[1]);
+  const deletionDate = new Date(); deletionDate.setMonth(deletionDate.getMonth() + 3);
+  const formattedDeletionDate = Utilities.formatDate(deletionDate, CONFIG.TIME_ZONE, "yyyy-MM-dd");
+  let syncedCount = 0;
+  let pageToken = null;
+  do {
+    const response = AdminDirectory.Users.list({ customer: 'my_customer', query: "isSuspended=true", maxResults: 500, pageToken: pageToken });
+    (response.users || []).forEach(user => {
+      if (!existingEmails.includes(user.primaryEmail)) {
+        logSheet.appendRow([new Date(), user.primaryEmail, "Suspended", formattedDeletionDate, "Sync-" + APP_VERSION]);
+        syncedCount++;
+      }
     });
-    if (response.items) {
-      response.items.forEach(file => {
-        fileList.push({
-          id: file.id, name: file.title, owner: file.ownerNames ? file.ownerNames[0] : "共用雲端硬碟項目",
-          modified: Utilities.formatDate(new Date(file.modifiedDate), TZ, "yyyy-MM-dd"),
-          link: file.alternateLink, isFolder: file.mimeType === "application/vnd.google-apps.folder"
-        });
-      });
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+  return `Added ${syncedCount} suspended accounts to queue.`;
+}
+
+function checkDeletionQueue() {
+  const ss = getDBSpreadsheet_();
+  const logSheet = ss.getSheetByName(CONFIG.SHEET_NAME_ACTIONS);
+  if (!logSheet) return "No logs.";
+  const data = logSheet.getDataRange().getValues();
+  if (data.length <= 1) return "Empty.";
+  const today = new Date(); today.setHours(0,0,0,0);
+  let deletedCount = 0;
+  let updatedRows = [data[0]];
+  for (let i = 1; i < data.length; i++) {
+    const row = data[i];
+    const email = row[1];
+    const status = row[2];
+    const scheduledDate = new Date(row[3]);
+    if (status === "Suspended" && scheduledDate <= today) {
+      try {
+        AdminDirectory.Users.remove(email);
+        row[2] = "Deleted (Auto)"; row[0] = new Date(); deletedCount++;
+      } catch (e) {
+        if (e.message.includes("notFound")) row[2] = "Deleted (Already Gone)";
+      }
     }
-    return fileList;
-  } catch (e) { throw new Error("Drive API 錯誤: " + e.message); }
+    updatedRows.push(row);
+  }
+  logSheet.getRange(1, 1, updatedRows.length, updatedRows[0].length).setValues(updatedRows);
+  return `Deleted ${deletedCount} accounts.`;
+}
+
+/* =========================================
+   FEATURE 4: DRIVE AUDIT (Updated for API v2/v3 compatibility)
+   ========================================= */
+
+/**
+ * Finds files older than a specific date. Supports All Drives.
+ * Fixed Sort: Largest files first (quotaBytesUsed desc), then Oldest (modifiedDate asc)
+ * * @param {string} dateString - YYYY-MM-DD (Filter Condition)
+ */
+function findOutdatedFiles(dateString) {
+  try {
+    // 1. Filter Condition: Date Cutoff (One condition)
+    const query = `modifiedDate < '${dateString}T00:00:00' and trashed = false`;
+    
+    // 2. Fixed Sort Logic: Largest First, then Oldest
+    const orderBy = "quotaBytesUsed desc, modifiedDate"; 
+
+    // 3. Call Drive API (v2)
+    const response = Drive.Files.list({
+      q: query,
+      maxResults: 100,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      corpora: 'allDrives',
+      orderBy: orderBy
+    });
+
+    // 4. Parse Response
+    const items = response.items || [];
+    
+    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS", `Found ${items.length} files. Sort: ${orderBy}`);
+
+    // 5. Map to UI format
+    return items.map(f => ({
+      id: f.id,
+      name: f.title,
+      link: f.alternateLink,
+      owner: (f.owners && f.owners.length > 0) ? f.owners[0].emailAddress : "Shared Drive",
+      modified: Utilities.formatDate(new Date(f.modifiedDate), CONFIG.TIME_ZONE, "yyyy-MM-dd"),
+      size: f.fileSize ? (f.fileSize / 1024 / 1024).toFixed(2) + " MB" : "0 MB",
+      isFolder: f.mimeType === "application/vnd.google-apps.folder"
+    }));
+  } catch (e) {
+    logSystemAction_("AUDIT_DRIVE", "Drive", "ERROR", e.message);
+    throw e;
+  }
 }
 
 /**
- * 批次封存或刪除檔案
+ * Batch deletes or archives (renames) files.
+ * * Uses Drive API v2 (patch)
  */
 function manageFiles(fileIds, action) {
+  let count = 0;
   fileIds.forEach(id => {
     try {
-      if (action === 'delete') Drive.Files.remove(id, { supportsAllDrives: true });
-      else {
+      if (action === 'delete') {
+        Drive.Files.remove(id, { supportsAllDrives: true });
+      } else if (action === 'archive') {
+        // v2 uses 'patch' for partial updates and 'title' for renaming
         const file = Drive.Files.get(id, { supportsAllDrives: true });
-        Drive.Files.patch({ title: "[ARCHIVED]_" + file.title }, id, { supportsAllDrives: true });
+        Drive.Files.patch({ title: `[ARCHIVED]_` + file.title }, id, { supportsAllDrives: true });
       }
-    } catch (e) {}
-  });
-  return `成功 ${action === 'delete' ? '刪除' : '封存'} ${fileIds.length} 個項目。`;
-}
-
-function createClassroomCourse(payload) {
-  if (!payload || !payload.name) throw new Error("課程名稱為必填。");
-  const course = {
-    name: payload.name,
-    section: payload.section || "",
-    description: payload.description || "",
-    ownerId: "me",
-    courseState: "ACTIVE"
-  };
-
-  try {
-    const created = Classroom.Courses.create(course);
-    if (payload.ownerEmail && payload.ownerEmail !== "me") {
-      Classroom.Courses.Teachers.create({ userId: payload.ownerEmail }, created.id);
-    }
-    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
-    sheet.appendRow([created.id, created.name, created.section || "", created.ownerId || "", payload.ownerEmail || "", new Date()]);
-    logClassroomAction_("CREATE_COURSE", created.id, "SUCCESS", created.name);
-    return { id: created.id, name: created.name, section: created.section || "", owner: created.ownerId || "", teacher: payload.ownerEmail || "" };
-  } catch (e) {
-    logClassroomAction_("CREATE_COURSE", payload.name, "FAILED", e.message);
-    throw new Error("建立課程失敗: " + e.message);
-  }
-}
-
-function listCreatedClassroomCourses() {
-  try {
-    let pageToken = null;
-    const courses = [];
-    do {
-      const response = Classroom.Courses.list({
-        pageSize: 100,
-        courseStates: ["ACTIVE", "PROVISIONED"],
-        pageToken: pageToken
-      });
-      const items = response.courses || [];
-      items.forEach(course => {
-        courses.push({
-          id: course.id,
-          name: course.name,
-          section: course.section || "",
-          owner: course.ownerId || "",
-          createdAt: course.creationTime || ""
-        });
-      });
-      pageToken = response.nextPageToken;
-    } while (pageToken);
-    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
-    const sheetData = sheet.getDataRange().getValues();
-    if (sheetData.length > 1) {
-      const rows = sheetData.slice(1).filter(row => row[0]);
-      const teacherById = {};
-      rows.forEach(row => {
-        teacherById[row[0]] = {
-          owner: row[3],
-          teacher: row[4],
-          createdAt: row[5]
-        };
-      });
-      courses.forEach(course => {
-        const info = teacherById[course.id];
-        if (info) {
-          course.owner = course.owner || info.owner || "";
-          course.teacher = info.teacher || "";
-          course.createdAt = course.createdAt || info.createdAt || "";
-        }
-      });
-      rows.forEach(row => {
-        if (!courses.some(c => c.id === row[0])) {
-          courses.push({
-            id: row[0],
-            name: row[1],
-            section: row[2],
-            owner: row[3],
-            teacher: row[4],
-            createdAt: row[5]
-          });
-        }
-      });
-    }
-    courses.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
-    return courses;
-  } catch (e) {
-    logClassroomAction_("LIST_COURSES", "Classroom API", "FAILED", e.message);
-    const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
-    const data = sheet.getDataRange().getValues();
-    if (data.length <= 1) return [];
-    const rows = data.slice(1).filter(row => row[0]);
-    return rows.map(row => ({
-      id: row[0],
-      name: row[1],
-      section: row[2],
-      owner: row[3],
-      teacher: row[4],
-      createdAt: row[5]
-    }));
-  }
-}
-
-function deleteClassroomCourse(courseId) {
-  if (!courseId) throw new Error("課程 ID 為必填。");
-  try {
-    Classroom.Courses.delete(courseId);
-    removeCourseFromSheet_(courseId);
-    logClassroomAction_("DELETE_COURSE", courseId, "SUCCESS", "");
-    return "課程已刪除: " + courseId;
-  } catch (e) {
-    logClassroomAction_("DELETE_COURSE", courseId, "FAILED", e.message);
-    throw new Error("刪除課程失敗: " + e.message);
-  }
-}
-
-function getOuMembers(ouPath) {
-  if (!ouPath) throw new Error("請選擇 OU。");
-  const members = [];
-  let pageToken = null;
-  try {
-    do {
-      const response = AdminDirectory.Users.list({
-        customer: 'my_customer',
-        query: `orgUnitPath='${ouPath}'`,
-        maxResults: 500,
-        pageToken: pageToken,
-        viewType: 'admin_view'
-      });
-      const users = response.users || [];
-      users.forEach(user => {
-        if (!user.suspended) {
-          members.push({ name: user.name.fullName, email: user.primaryEmail });
-        }
-      });
-      pageToken = response.nextPageToken;
-    } while (pageToken);
-    return members;
-  } catch (e) {
-    throw new Error("讀取 OU 成員失敗: " + e.message);
-  }
-}
-
-function addStudentsToCourse(courseId, emails) {
-  if (!courseId) throw new Error("請選擇課程。");
-  if (!emails || emails.length === 0) throw new Error("請選擇成員。");
-  let success = 0;
-  let failed = 0;
-  const errors = [];
-  emails.forEach(email => {
-    try {
-      Classroom.Courses.Students.create({ userId: email }, courseId);
-      success++;
+      count++;
     } catch (e) {
-      failed++;
-      errors.push(email + ": " + e.message);
+      console.error(`Error processing ${id}:`, e);
     }
   });
-  const status = failed ? "PARTIAL" : "SUCCESS";
-  logClassroomAction_("ADD_STUDENTS", courseId, status, `success=${success}, failed=${failed}`);
-  return {
-    message: `加入完成：成功 ${success} 人，失敗 ${failed} 人。`,
-    errors: errors
-  };
+  
+  const verb = action === 'delete' ? 'Deleted' : 'Archived';
+  logSystemAction_("MANAGE_FILES", "Batch", "SUCCESS", `${verb} ${count} files`);
+  return `Successfully ${verb.toLowerCase()} ${count} items.`;
 }
 
-function runClassroomDiagnostics() {
-  try {
-    const result = Classroom.Courses.list({ pageSize: 1, courseStates: ["ACTIVE"] });
-    logClassroomAction_("DIAGNOSTIC", "Classroom API", "SUCCESS", "list ok");
-    return "Classroom API 測試成功。可讀取課程數量: " + (result.courses ? result.courses.length : 0);
-  } catch (e) {
-    logClassroomAction_("DIAGNOSTIC", "Classroom API", "FAILED", e.message);
-    throw new Error("Classroom API 測試失敗: " + e.message);
-  }
-}
+/* =========================================
+   UTILITIES
+   ========================================= */
 
-function getOrCreateSheet_(name, headers, spreadsheet) {
-  const ss = spreadsheet || SpreadsheetApp.getActiveSpreadsheet();
-  let sheet = ss.getSheetByName(name);
-  if (!sheet) {
-    sheet = ss.insertSheet(name);
-    if (headers && headers.length) sheet.appendRow(headers);
-  } else if (headers && headers.length) {
-    if (sheet.getLastRow() === 0) {
-      sheet.appendRow(headers);
-    } else {
-      const headerRange = sheet.getRange(1, 1, 1, headers.length);
-      headerRange.setValues([headers]);
-    }
-  }
-  return sheet;
-}
-
-function removeCourseFromSheet_(courseId) {
-  const sheet = getOrCreateSheet_(CLASSROOM_COURSE_SHEET, ["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"], getClassroomSpreadsheet_());
-  const data = sheet.getDataRange().getValues();
-  if (data.length <= 1) return;
-  const rows = [data[0]];
-  for (let i = 1; i < data.length; i++) {
-    if (data[i][0] !== courseId) rows.push(data[i]);
-  }
-  sheet.clearContents();
-  sheet.getRange(1, 1, rows.length, rows[0].length).setValues(rows);
-}
-
-function logClassroomAction_(action, target, status, detail) {
-  const sheet = getOrCreateSheet_(CLASSROOM_LOG_SHEET, ["Timestamp", "Action", "Target", "Status", "Detail", "Version"], getClassroomSpreadsheet_());
-  sheet.appendRow([new Date(), action, target, status, detail || "", APP_VERSION]);
-}
-
-function getClassroomSpreadsheet_() {
-  const props = PropertiesService.getScriptProperties();
-  const spreadsheetId = props.getProperty(CLASSROOM_SPREADSHEET_ID_PROPERTY);
-  if (spreadsheetId) return SpreadsheetApp.openById(spreadsheetId);
-  return SpreadsheetApp.getActiveSpreadsheet();
-}
-
-function setClassroomSpreadsheetId(spreadsheetId) {
-  if (!spreadsheetId) throw new Error("Spreadsheet ID 為必填。");
-  PropertiesService.getScriptProperties().setProperty(CLASSROOM_SPREADSHEET_ID_PROPERTY, spreadsheetId);
-  return "已更新 Classroom Spreadsheet ID。";
+function testApiConnection() {
+  const user = Session.getActiveUser().getEmail();
+  return `Connected as ${user}`;
 }
