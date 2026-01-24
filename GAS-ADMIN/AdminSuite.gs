@@ -20,14 +20,13 @@
  * @include https://www.googleapis.com/auth/drive
  */
 
-const APP_VERSION = "1.8.2";
+const APP_VERSION = "1.8.3";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
-  SHEET_ID_DEFAULT: "1S81cr3qiCyU2BlkvHDAb0TJp5Dy2O9A05u3FoIoKCvk",
   SHEET_NAME_COURSES: "Classroom_Courses",
   SHEET_NAME_LOGS: "Classroom_Logs",
   SHEET_NAME_ACTIONS: "Action_Logs",
-  PROP_SHEET_ID: "CLASSROOM_SPREADSHEET_ID"
+  PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
 };
 
 /**
@@ -49,14 +48,23 @@ function doGet(e) {
 function getDBSpreadsheet_() {
   const props = PropertiesService.getScriptProperties();
   const storedId = props.getProperty(CONFIG.PROP_SHEET_ID);
-  const targetId = storedId || CONFIG.SHEET_ID_DEFAULT;
-  
+
   try {
-    return SpreadsheetApp.openById(targetId);
+    if (storedId) return SpreadsheetApp.openById(storedId);
+    return SpreadsheetApp.getActiveSpreadsheet();
   } catch (e) {
-    console.error("Could not open spreadsheet: " + targetId);
+    console.error("Could not open spreadsheet from properties.");
     return SpreadsheetApp.getActiveSpreadsheet(); 
   }
+}
+
+/**
+ * Saves the target Spreadsheet ID in script properties.
+ */
+function setDbSpreadsheetId(spreadsheetId) {
+  if (!spreadsheetId) throw new Error("Spreadsheet ID is required.");
+  PropertiesService.getScriptProperties().setProperty(CONFIG.PROP_SHEET_ID, spreadsheetId);
+  return "Spreadsheet ID saved.";
 }
 
 /**
@@ -384,45 +392,48 @@ function checkDeletionQueue() {
 }
 
 /* =========================================
-   FEATURE 4: DRIVE AUDIT (Updated for API v2/v3 compatibility)
+   FEATURE 4: DRIVE AUDIT (Drive API v3)
    ========================================= */
 
 /**
  * Finds files older than a specific date. Supports All Drives.
- * Fixed Sort: Largest files first (quotaBytesUsed desc), then Oldest (modifiedDate asc)
+ * Fixed Sort: Largest files first (quotaBytesUsed desc), then Oldest (modifiedTime asc)
  * * @param {string} dateString - YYYY-MM-DD (Filter Condition)
  */
 function findOutdatedFiles(dateString) {
   try {
     // 1. Filter Condition: Date Cutoff (One condition)
-    const query = `modifiedDate < '${dateString}T00:00:00' and trashed = false`;
+    if (!dateString) throw new Error("Date string is required (YYYY-MM-DD).");
+    const cutoff = `${dateString}T00:00:00Z`;
+    const query = `modifiedTime < '${cutoff}' and trashed = false`;
     
     // 2. Fixed Sort Logic: Largest First, then Oldest
-    const orderBy = "quotaBytesUsed desc, modifiedDate"; 
+    const orderBy = "quotaBytesUsed desc, modifiedTime"; 
 
-    // 3. Call Drive API (v2)
+    // 3. Call Drive API (v3)
     const response = Drive.Files.list({
       q: query,
-      maxResults: 100,
+      pageSize: 100,
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
       corpora: 'allDrives',
-      orderBy: orderBy
+      orderBy: orderBy,
+      fields: "files(id,name,webViewLink,owners(emailAddress),modifiedTime,size,quotaBytesUsed,mimeType)"
     });
 
     // 4. Parse Response
-    const items = response.items || [];
+    const items = response.files || [];
     
     logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS", `Found ${items.length} files. Sort: ${orderBy}`);
 
     // 5. Map to UI format
     return items.map(f => ({
       id: f.id,
-      name: f.title,
-      link: f.alternateLink,
+      name: f.name,
+      link: f.webViewLink,
       owner: (f.owners && f.owners.length > 0) ? f.owners[0].emailAddress : "Shared Drive",
-      modified: Utilities.formatDate(new Date(f.modifiedDate), CONFIG.TIME_ZONE, "yyyy-MM-dd"),
-      size: f.fileSize ? (f.fileSize / 1024 / 1024).toFixed(2) + " MB" : "0 MB",
+      modified: Utilities.formatDate(new Date(f.modifiedTime), CONFIG.TIME_ZONE, "yyyy-MM-dd"),
+      size: (Number(f.size || f.quotaBytesUsed || 0) / 1024 / 1024).toFixed(2) + " MB",
       isFolder: f.mimeType === "application/vnd.google-apps.folder"
     }));
   } catch (e) {
@@ -433,18 +444,18 @@ function findOutdatedFiles(dateString) {
 
 /**
  * Batch deletes or archives (renames) files.
- * * Uses Drive API v2 (patch)
+ * * Uses Drive API v3 (update)
  */
 function manageFiles(fileIds, action) {
   let count = 0;
   fileIds.forEach(id => {
     try {
       if (action === 'delete') {
-        Drive.Files.remove(id, { supportsAllDrives: true });
+        Drive.Files.delete(id, { supportsAllDrives: true });
       } else if (action === 'archive') {
-        // v2 uses 'patch' for partial updates and 'title' for renaming
-        const file = Drive.Files.get(id, { supportsAllDrives: true });
-        Drive.Files.patch({ title: `[ARCHIVED]_` + file.title }, id, { supportsAllDrives: true });
+        // v3 uses 'update' for partial updates and 'name' for renaming
+        const file = Drive.Files.get(id, { supportsAllDrives: true, fields: "id,name" });
+        Drive.Files.update({ name: `[ARCHIVED]_` + file.name }, id, { supportsAllDrives: true });
       }
       count++;
     } catch (e) {
