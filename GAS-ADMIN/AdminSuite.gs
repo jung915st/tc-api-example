@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 1.8.2
- * Updated: 2026-01-15 (Timezone UTC+8)
+ * Version: 1.8.3
+ * Updated: 2026-02-06 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Directory, Drive).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU
