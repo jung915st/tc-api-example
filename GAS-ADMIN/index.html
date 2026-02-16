@@ -4,7 +4,7 @@
   <base target="_top">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Domain Admin Suite v1.8.2</title>
+  <title>Domain Admin Suite v<?= appVersion ?></title>
   
   <!-- Bootstrap 5 & Icons -->
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
@@ -57,6 +57,7 @@
 
     /* Filter Bars */
     .filters-bar { background-color: #fff; padding: 15px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 15px; }
+    .batch-result-scroll { max-height: 220px; overflow-y: auto; }
   </style>
 </head>
 <body>
@@ -75,7 +76,7 @@
     <div class="d-flex justify-content-between align-items-center mb-4">
       <div>
         <h3 class="mb-0">Domain Admin Suite</h3>
-        <small class="text-muted">Version 1.8.2 | UTC+8</small>
+        <small class="text-muted">Version <?= appVersion ?> | UTC+8</small>
       </div>
       <div>
         <button class="btn btn-outline-secondary btn-sm" onclick="runConnectivityTest()">Test API Connection</button>
@@ -144,6 +145,41 @@
                     <button class="btn btn-success px-4" onclick="createCourse()">Create Course</button>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <!-- Batch Create Card -->
+            <div class="card mb-3">
+              <div class="card-header bg-white fw-bold text-primary">
+                <i class="bi bi-upload"></i> Batch Create Courses (CSV / TSV)
+              </div>
+              <div class="card-body">
+                <div class="row g-2 align-items-end">
+                  <div class="col-md-8">
+                    <label class="form-label small text-muted mb-1">Upload file</label>
+                    <input type="file" id="batchCourseFile" class="form-control" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+                  </div>
+                  <div class="col-md-4 d-grid">
+                    <button class="btn btn-primary" onclick="uploadBatchCourses()">
+                      <i class="bi bi-cloud-arrow-up"></i> Upload & Create
+                    </button>
+                  </div>
+                  <div class="col-12 d-flex flex-wrap gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="downloadBatchTemplate('csv')">
+                      <i class="bi bi-download"></i> CSV Sample
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="downloadBatchTemplate('tsv')">
+                      <i class="bi bi-download"></i> TSV Sample
+                    </button>
+                  </div>
+                  <div class="col-12">
+                    <small class="text-muted">
+                      Required headers: <code>name</code>, <code>teacherEmail</code>. Optional: <code>section</code>, <code>description</code>.
+                      Maximum 100 non-empty rows per upload.
+                    </small>
+                  </div>
+                </div>
+                <div id="batchCourseResult" class="mt-3 small text-muted">No batch upload executed yet.</div>
               </div>
             </div>
 
@@ -395,6 +431,15 @@
       return Array.from(document.querySelectorAll(selector + ':checked')).map(cb => cb.value);
     }
 
+    function escapeHtml(text) {
+      return String(text || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
     // --- NEW: CENTRALIZED OU LOADING ---
     function initOUs() {
       // setLoader(true, "Loading Organization Units..."); // Optional: silent load to avoid blocking UI
@@ -478,6 +523,80 @@
         setLoader(false);
         alert("Creation Failed: " + err.message);
       }).createClassroomCourse({ name, section, teacherEmail });
+    }
+
+    function uploadBatchCourses() {
+      const input = document.getElementById('batchCourseFile');
+      const file = input.files && input.files[0];
+      if (!file) return alert("Please choose a CSV or TSV file.");
+
+      const lowerName = file.name.toLowerCase();
+      if (!(lowerName.endsWith('.csv') || lowerName.endsWith('.tsv'))) {
+        return alert("Only CSV or TSV files are supported.");
+      }
+
+      const reader = new FileReader();
+      reader.onload = evt => {
+        const content = evt.target.result || "";
+        setLoader(true, `Processing ${file.name}...`);
+        google.script.run.withSuccessHandler(result => {
+          setLoader(false);
+          renderBatchResult(result);
+          loadCourses();
+        }).withFailureHandler(err => {
+          setLoader(false);
+          alert("Batch upload failed: " + err.message);
+        }).processBatchCourseUpload(file.name, content);
+      };
+      reader.onerror = () => alert("Failed to read the selected file.");
+      reader.readAsText(file);
+    }
+
+    function downloadBatchTemplate(format) {
+      setLoader(true, `Preparing ${format.toUpperCase()} template...`);
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        const blob = new Blob([res.content], { type: res.mimeType || "text/plain;charset=utf-8" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = res.filename || `classroom-course-batch-template.${format}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Template download failed: " + err.message);
+      }).getCourseBatchTemplate(format);
+    }
+
+    function renderBatchResult(result) {
+      const el = document.getElementById('batchCourseResult');
+      if (!el || !result) return;
+
+      const summary = result.summary || {};
+      const statusClass = (summary.errors || summary.partial) ? "alert-warning" : "alert-success";
+      const createdHtml = (result.created || []).length
+        ? `<div class="mt-2"><strong>Created (${result.created.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.created.map(item => `<li>Row ${item.rowNumber}: ${escapeHtml(item.name)} (${escapeHtml(item.section || "-")}) - ${escapeHtml(item.teacherStatus)}</li>`).join("")}</ul></div>`
+        : "";
+      const skippedHtml = (result.skipped || []).length
+        ? `<div class="mt-2"><strong>Skipped (${result.skipped.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.skipped.map(item => `<li>Row ${item.rowNumber}: ${escapeHtml(item.reason)}</li>`).join("")}</ul></div>`
+        : "";
+      const errorsHtml = (result.errors || []).length
+        ? `<div class="mt-2"><strong>Errors (${result.errors.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.errors.map(item => `<li>Row ${item.rowNumber} [${escapeHtml(item.stage || "UNKNOWN")}]: ${escapeHtml(item.message)}</li>`).join("")}</ul></div>`
+        : "";
+
+      el.innerHTML = `
+        <div class="alert ${statusClass} mb-0">
+          <div><strong>File:</strong> ${escapeHtml(result.fileName || "upload")}</div>
+          <div><strong>Mode:</strong> ${escapeHtml(result.delimiter || "")}</div>
+          <div><strong>Rows:</strong> ${summary.totalRows || 0} | Attempted: ${summary.attemptedRows || 0} | Created: ${summary.created || 0} | Partial: ${summary.partial || 0} | Skipped: ${summary.skipped || 0} | Errors: ${summary.errors || 0}</div>
+          ${createdHtml}
+          ${skippedHtml}
+          ${errorsHtml}
+        </div>
+      `;
     }
 
     function deleteCourse(id) {

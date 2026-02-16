@@ -1,0 +1,282 @@
+/**
+ * Unit tests for Classroom batch upload helpers.
+ * Run `runBatchCourseUnitTests()` in Apps Script editor.
+ */
+
+function runBatchCourseUnitTests() {
+  const tests = [
+    test_detectDelimiter_csv,
+    test_detectDelimiter_tsv,
+    test_mapHeaderIndexes_aliases,
+    test_mapHeaderIndexes_missingRequiredTeacherEmail,
+    test_validateBatchRow_missingTeacherEmail,
+    test_validateBatchRow_invalidTeacherEmail,
+    test_enforceBatchLimit_over100,
+    test_buildCourseKey_normalization,
+    test_buildAndParseMultipart,
+    test_executeBatchOperations_chunking,
+    test_runCourseBatchPhases_continueOnError,
+    test_getCourseBatchTemplate_csv_tsv
+  ];
+
+  let passCount = 0;
+  const failures = [];
+
+  tests.forEach(testFn => {
+    try {
+      testFn();
+      passCount++;
+    } catch (e) {
+      failures.push(`${testFn.name}: ${e.message}`);
+    }
+  });
+
+  const summary = `Batch tests passed ${passCount}/${tests.length}.`;
+  if (failures.length > 0) {
+    throw new Error(`${summary}\n${failures.join("\n")}`);
+  }
+  return summary;
+}
+
+function test_detectDelimiter_csv() {
+  assertEqual_(detectBatchDelimiter_("courses.csv", "name,teacherEmail\nA,a@example.edu"), ",", "CSV delimiter");
+}
+
+function test_detectDelimiter_tsv() {
+  assertEqual_(detectBatchDelimiter_("courses.tsv", "name\tteacherEmail\nA\ta@example.edu"), "\t", "TSV delimiter");
+}
+
+function test_mapHeaderIndexes_aliases() {
+  const map = mapCourseBatchHeaderIndexes_(["Course Name", "Period", "Instructor Email", "Desc"]);
+  assertEqual_(map.name, 0, "Alias map name");
+  assertEqual_(map.section, 1, "Alias map section");
+  assertEqual_(map.teacherEmail, 2, "Alias map teacherEmail");
+  assertEqual_(map.description, 3, "Alias map description");
+}
+
+function test_mapHeaderIndexes_missingRequiredTeacherEmail() {
+  assertThrows_(
+    function() {
+      mapCourseBatchHeaderIndexes_(["name", "section", "description"]);
+    },
+    "teacherEmail",
+    "Missing required teacherEmail"
+  );
+}
+
+function test_validateBatchRow_missingTeacherEmail() {
+  const result = validateBatchCourseRow_({
+    name: "Math",
+    section: "A",
+    teacherEmail: "",
+    description: ""
+  });
+  assertFalse_(result.valid, "Row should be invalid when teacherEmail is missing.");
+}
+
+function test_validateBatchRow_invalidTeacherEmail() {
+  const result = validateBatchCourseRow_({
+    name: "Math",
+    section: "A",
+    teacherEmail: "not-an-email",
+    description: ""
+  });
+  assertFalse_(result.valid, "Row should be invalid for malformed teacherEmail.");
+}
+
+function test_enforceBatchLimit_over100() {
+  assertThrows_(
+    function() {
+      assertBatchRowLimit_(101);
+    },
+    "row limit",
+    "Row limit should reject values above 100"
+  );
+}
+
+function test_buildCourseKey_normalization() {
+  const a = buildCourseKey_("  Math  7A ", " Spring 2026 ");
+  const b = buildCourseKey_("math 7a", "spring 2026");
+  assertEqual_(a, b, "Course key should normalize case/whitespace.");
+}
+
+function test_buildAndParseMultipart() {
+  const operations = [{
+    contentId: "create-row-2",
+    method: "POST",
+    path: "/v1/courses",
+    body: { name: "Math 7A" }
+  }];
+  const requestBody = buildBatchMultipartRequest_(operations, "batch_req");
+  assertTrue_(requestBody.indexOf("POST /v1/courses HTTP/1.1") !== -1, "Request should include path-only method line.");
+  assertTrue_(requestBody.indexOf("Content-ID: <create-row-2>") !== -1, "Request should include content ID.");
+
+  const responseBody = [
+    "--batch_res",
+    "Content-Type: application/http",
+    "Content-ID: <response-create-row-2>",
+    "",
+    "HTTP/1.1 200 OK",
+    "Content-Type: application/json; charset=UTF-8",
+    "",
+    '{"id":"course_2","name":"Math 7A"}',
+    "--batch_res--"
+  ].join("\r\n");
+
+  const parsed = parseBatchMultipartResponse_(responseBody, "multipart/mixed; boundary=batch_res");
+  assertEqual_(parsed.length, 1, "Should parse one multipart response item.");
+  assertEqual_(parsed[0].contentId, "create-row-2", "Content-ID should normalize response prefix.");
+  assertEqual_(parsed[0].statusCode, 200, "Parsed response status code.");
+  assertEqual_(parsed[0].body.id, "course_2", "Parsed response JSON body.");
+}
+
+function test_executeBatchOperations_chunking() {
+  let fetchCount = 0;
+
+  const fakeFetch = function(url, options) {
+    fetchCount++;
+    const boundaryMatch = /boundary=([^;]+)/i.exec(options.contentType || "");
+    const boundary = boundaryMatch ? boundaryMatch[1] : "batch_resp";
+    const ids = extractContentIdsFromPayload_(options.payload || "");
+
+    const parts = ids.map(id => [
+      `--${boundary}`,
+      "Content-Type: application/http",
+      `Content-ID: <response-${id}>`,
+      "",
+      "HTTP/1.1 200 OK",
+      "Content-Type: application/json; charset=UTF-8",
+      "",
+      `{"id":"${id}"}`,
+      ""
+    ].join("\r\n")).join("");
+
+    return createFakeResponse_(
+      200,
+      { "Content-Type": `multipart/mixed; boundary=${boundary}` },
+      `${parts}--${boundary}--`
+    );
+  };
+
+  const operations = [];
+  for (let i = 0; i < 100; i++) {
+    operations.push({
+      contentId: `create-row-${i + 2}`,
+      method: "POST",
+      path: "/v1/courses",
+      body: { name: `Course ${i}` }
+    });
+  }
+
+  const results = executeBatchOperations_(operations, fakeFetch);
+  assertEqual_(fetchCount, 2, "100 requests should be split into 2 batch calls (50 each).");
+  assertEqual_(results.length, 100, "Each operation should return one result.");
+  assertTrue_(results.every(r => r.ok), "All fake responses should be successful.");
+}
+
+function test_runCourseBatchPhases_continueOnError() {
+  const rows = [
+    { rowNumber: 2, name: "Math", section: "A", teacherEmail: "teacher1@example.edu", description: "" },
+    { rowNumber: 3, name: "Science", section: "B", teacherEmail: "teacher2@example.edu", description: "" }
+  ];
+
+  const executor = function(operations) {
+    return operations.map(op => {
+      if (op.contentId === "create-row-2") {
+        return {
+          contentId: op.contentId,
+          ok: true,
+          statusCode: 200,
+          message: "OK",
+          body: { id: "c2", name: "Math", section: "A", ownerId: "me", enrollmentCode: "E2" }
+        };
+      }
+      if (op.contentId === "create-row-3") {
+        return {
+          contentId: op.contentId,
+          ok: true,
+          statusCode: 200,
+          message: "OK",
+          body: { id: "c3", name: "Science", section: "B", ownerId: "me", enrollmentCode: "E3" }
+        };
+      }
+      if (op.contentId === "teacher-row-2") {
+        return { contentId: op.contentId, ok: true, statusCode: 200, message: "OK", body: {} };
+      }
+      if (op.contentId === "teacher-row-3") {
+        return {
+          contentId: op.contentId,
+          ok: false,
+          statusCode: 403,
+          message: "Permission denied",
+          body: { error: { message: "Permission denied" } }
+        };
+      }
+      return { contentId: op.contentId, ok: false, statusCode: 500, message: "Unexpected", body: null };
+    });
+  };
+
+  const result = runCourseBatchPhases_(rows, executor);
+  assertEqual_(result.createdRecords.length, 2, "Courses created in phase 1 should be returned even with teacher errors.");
+  assertEqual_(result.createdRecords.filter(r => r.teacherAssigned).length, 1, "Only one row should have successful teacher assignment.");
+  assertEqual_(result.errors.length, 1, "Teacher assignment failure should be reported as one error.");
+  assertEqual_(result.errors[0].stage, "ADD_TEACHER", "Error stage should indicate teacher assignment.");
+  assertEqual_(result.errors[0].rowNumber, 3, "Teacher assignment failure should point to row 3.");
+}
+
+function test_getCourseBatchTemplate_csv_tsv() {
+  const csv = getCourseBatchTemplate("csv");
+  const tsv = getCourseBatchTemplate("tsv");
+  assertTrue_(csv.filename.endsWith(".csv"), "CSV template filename.");
+  assertTrue_(tsv.filename.endsWith(".tsv"), "TSV template filename.");
+  assertTrue_(csv.content.indexOf("teacherEmail") !== -1, "CSV template should include required headers.");
+  assertTrue_(tsv.content.indexOf("\t") !== -1, "TSV template should use tab delimiter.");
+}
+
+function createFakeResponse_(statusCode, headers, body) {
+  return {
+    getResponseCode: function() { return statusCode; },
+    getAllHeaders: function() { return headers; },
+    getContentText: function() { return body; }
+  };
+}
+
+function extractContentIdsFromPayload_(payload) {
+  const ids = [];
+  const regex = /Content-ID:\s*<([^>]+)>/g;
+  let match;
+  while ((match = regex.exec(String(payload || ""))) !== null) {
+    ids.push(match[1]);
+  }
+  return ids;
+}
+
+function assertTrue_(condition, message) {
+  if (!condition) throw new Error(message || "Assertion failed: expected true.");
+}
+
+function assertFalse_(condition, message) {
+  if (condition) throw new Error(message || "Assertion failed: expected false.");
+}
+
+function assertEqual_(actual, expected, message) {
+  if (actual !== expected) {
+    throw new Error(`${message || "Assertion failed"} (expected: ${expected}, actual: ${actual})`);
+  }
+}
+
+function assertThrows_(fn, expectedMessageFragment, message) {
+  let threw = false;
+  try {
+    fn();
+  } catch (e) {
+    threw = true;
+    const text = String(e && e.message ? e.message : e);
+    if (expectedMessageFragment && text.indexOf(expectedMessageFragment) === -1) {
+      throw new Error(`${message || "Assertion failed"} (missing fragment: ${expectedMessageFragment}, actual: ${text})`);
+    }
+  }
+  if (!threw) {
+    throw new Error(message || "Assertion failed: expected function to throw.");
+  }
+}

@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 1.8.3
- * Updated: 2026-02-06 (Timezone UTC+8)
+ * Version: 1.8.5
+ * Updated: 2026-02-16 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Directory, Drive).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU
@@ -11,6 +11,7 @@
  * 5. Logging: Centralized logging to Spreadsheet (UTC+8)
  * * * REQUIRED SCOPES:
  * @include https://www.googleapis.com/auth/script.scriptapp
+ * @include https://www.googleapis.com/auth/script.external_request
  * @include https://www.googleapis.com/auth/spreadsheets
  * @include https://www.googleapis.com/auth/classroom.courses
  * @include https://www.googleapis.com/auth/classroom.rosters
@@ -20,13 +21,45 @@
  * @include https://www.googleapis.com/auth/drive
  */
 
-const APP_VERSION = "1.8.3";
+const APP_VERSION = "1.8.5";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
   SHEET_NAME_LOGS: "Classroom_Logs",
   SHEET_NAME_ACTIONS: "Action_Logs",
   PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
+};
+
+const COURSE_BATCH_CONFIG = {
+  MAX_ROWS: 100,
+  MAX_CALLS_PER_BATCH: 50,
+  ENDPOINT: "https://classroom.googleapis.com/batch",
+  TEMPLATE_HEADERS: ["name", "section", "teacherEmail", "description"]
+};
+
+const COURSE_BATCH_REQUIRED_FIELDS = ["name", "teacherEmail"];
+
+const COURSE_BATCH_HEADER_ALIAS_LOOKUP = {
+  name: "name",
+  course: "name",
+  coursename: "name",
+  classname: "name",
+  classtitle: "name",
+  title: "name",
+  section: "section",
+  classsection: "section",
+  period: "section",
+  semester: "section",
+  teacher: "teacherEmail",
+  teacheremail: "teacherEmail",
+  teacherid: "teacherEmail",
+  instructor: "teacherEmail",
+  instructoremail: "teacherEmail",
+  owneremail: "teacherEmail",
+  description: "description",
+  coursedescription: "description",
+  desc: "description",
+  details: "description"
 };
 
 /**
@@ -101,24 +134,20 @@ function logSystemAction_(action, target, status, detail) {
 function createClassroomCourse(payload) {
   if (!payload || !payload.name) throw new Error("Course Name is required.");
   
-  // 1. Fixed Course Owner: Always "me" (The Admin executing the script)
   const coursePayload = {
     name: payload.name,
     section: payload.section || "",
     description: payload.description || "",
-    ownerId: "me", 
+    ownerId: "me",
     courseState: "ACTIVE"
   };
 
   try {
-    // Create Course
     const created = Classroom.Courses.create(coursePayload);
     
-    // 2. Add Teacher: If a specific teacher is selected (and it's not the admin 'me')
     let teacherStatus = "Owner only (Admin)";
     if (payload.teacherEmail && payload.teacherEmail !== "me") {
       try {
-        // This adds the user as a *Teacher* to the course
         Classroom.Courses.Teachers.create({ userId: payload.teacherEmail }, created.id);
         teacherStatus = `Teacher added: ${payload.teacherEmail}`;
       } catch (e) {
@@ -126,15 +155,14 @@ function createClassroomCourse(payload) {
       }
     }
 
-    // 3. Log to Sheet
-    const ss = getDBSpreadsheet_();
-    let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_COURSES);
-    if (!sheet) {
-      sheet = ss.insertSheet(CONFIG.SHEET_NAME_COURSES);
-      sheet.appendRow(["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"]);
-    }
-    // Record both the Owner (created.ownerId) and the assigned Teacher (payload.teacherEmail)
-    sheet.appendRow([created.id, created.name, created.section, created.ownerId, payload.teacherEmail || "", new Date()]);
+    appendCourseRecordsToSheet_([{
+      courseId: created.id,
+      name: created.name || payload.name,
+      section: created.section || payload.section || "",
+      ownerId: created.ownerId || "me",
+      teacherEmail: payload.teacherEmail || "",
+      createdAt: new Date()
+    }]);
     
     logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", `Name: ${created.name}, ${teacherStatus}`);
     
@@ -218,6 +246,605 @@ function addStudentsToCourse(courseId, studentEmails) {
   });
   logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", `Success: ${results.success.length}, Errors: ${results.errors.length}`);
   return { message: `Processed ${studentEmails.length} students.`, details: results };
+}
+
+/**
+ * Processes CSV/TSV content and creates courses in Classroom using true multipart batch requests.
+ * Teacher assignment is required per row and applied as phase 2 after successful course creation.
+ */
+function processBatchCourseUpload(fileName, fileContent) {
+  if (!fileContent || !String(fileContent).trim()) {
+    throw new Error("Upload file is empty.");
+  }
+
+  const delimiter = detectBatchDelimiter_(fileName, fileContent);
+  const rows = parseDelimitedRows_(fileContent, delimiter);
+  if (rows.length < 2) {
+    throw new Error("File must include headers and at least one data row.");
+  }
+
+  const headerMap = mapCourseBatchHeaderIndexes_(rows[0]);
+  const existingCourseKeys = getActiveCourseKeySet_();
+  const seenUploadKeys = new Set();
+  const skipped = [];
+  const candidates = [];
+  let nonEmptyRowCount = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const rowNumber = i + 1;
+    const rowObj = normalizeBatchCourseRow_(rows[i], headerMap);
+    if (isBatchCourseRowEmpty_(rowObj)) continue;
+
+    nonEmptyRowCount++;
+    const validation = validateBatchCourseRow_(rowObj);
+    if (!validation.valid) {
+      skipped.push({ rowNumber: rowNumber, reason: validation.errors.join(" ") });
+      continue;
+    }
+
+    const key = buildCourseKey_(rowObj.name, rowObj.section);
+    if (existingCourseKeys.has(key)) {
+      skipped.push({ rowNumber: rowNumber, reason: "Skipped duplicate active course (name + section)." });
+      continue;
+    }
+    if (seenUploadKeys.has(key)) {
+      skipped.push({ rowNumber: rowNumber, reason: "Skipped duplicate row in upload file (name + section)." });
+      continue;
+    }
+
+    seenUploadKeys.add(key);
+    candidates.push({
+      rowNumber: rowNumber,
+      key: key,
+      name: rowObj.name,
+      section: rowObj.section,
+      teacherEmail: rowObj.teacherEmail,
+      description: rowObj.description
+    });
+  }
+
+  assertBatchRowLimit_(nonEmptyRowCount);
+  if (nonEmptyRowCount === 0) {
+    throw new Error("No non-empty rows found in upload file.");
+  }
+
+  const phaseOutput = runCourseBatchPhases_(candidates, function(operations) {
+    return executeBatchOperations_(operations);
+  });
+
+  if (phaseOutput.createdRecords.length > 0) {
+    appendCourseRecordsToSheet_(phaseOutput.createdRecords);
+  }
+
+  const created = phaseOutput.createdRecords.map(record => ({
+    rowNumber: record.rowNumber,
+    courseId: record.courseId,
+    name: record.name,
+    section: record.section,
+    teacherEmail: record.teacherEmail,
+    enrollmentCode: record.enrollmentCode || "",
+    teacherStatus: record.teacherAssigned ? "ASSIGNED" : "FAILED"
+  }));
+
+  const result = {
+    fileName: fileName || "upload",
+    delimiter: delimiter === "\t" ? "TSV" : "CSV",
+    rowLimit: COURSE_BATCH_CONFIG.MAX_ROWS,
+    summary: {
+      totalRows: nonEmptyRowCount,
+      attemptedRows: candidates.length,
+      created: created.filter(item => item.teacherStatus === "ASSIGNED").length,
+      partial: created.filter(item => item.teacherStatus === "FAILED").length,
+      skipped: skipped.length,
+      errors: phaseOutput.errors.length
+    },
+    created: created,
+    skipped: skipped,
+    errors: phaseOutput.errors
+  };
+
+  logSystemAction_(
+    "BATCH_CREATE_COURSES",
+    result.fileName,
+    "COMPLETE",
+    `Rows: ${result.summary.totalRows}, Created: ${result.summary.created}, Partial: ${result.summary.partial}, Skipped: ${result.summary.skipped}, Errors: ${result.summary.errors}`
+  );
+
+  return result;
+}
+
+/**
+ * Returns a sample CSV/TSV template for bulk Classroom course creation.
+ */
+function getCourseBatchTemplate(format) {
+  const normalizedFormat = String(format || "csv").toLowerCase() === "tsv" ? "tsv" : "csv";
+  const delimiter = normalizedFormat === "tsv" ? "\t" : ",";
+  const mimeType = normalizedFormat === "tsv" ? "text/tab-separated-values" : "text/csv";
+
+  const templateRows = [
+    COURSE_BATCH_CONFIG.TEMPLATE_HEADERS,
+    ["Math 7A", "2026-Spring", "teacher01@example.edu", "Grade 7 math class"],
+    ["Science 8B", "2026-Spring", "teacher02@example.edu", "Grade 8 science class"]
+  ];
+
+  const content = templateRows
+    .map(row => row.map(cell => escapeDelimitedValue_(cell, delimiter)).join(delimiter))
+    .join("\n");
+
+  return {
+    filename: `classroom-course-batch-template.${normalizedFormat}`,
+    mimeType: mimeType,
+    content: content
+  };
+}
+
+function runCourseBatchPhases_(rows, batchExecutor) {
+  const createdRecords = [];
+  const errors = [];
+
+  if (!rows || rows.length === 0) {
+    return { createdRecords: createdRecords, errors: errors };
+  }
+
+  const createOps = rows.map(row => ({
+    contentId: `create-row-${row.rowNumber}`,
+    method: "POST",
+    path: "/v1/courses",
+    body: {
+      name: row.name,
+      section: row.section || "",
+      description: row.description || "",
+      ownerId: "me",
+      courseState: "ACTIVE"
+    },
+    meta: row
+  }));
+
+  const createResultMap = mapBatchResultsByContentId_(batchExecutor(createOps));
+  const createdForTeacherPhase = [];
+
+  createOps.forEach(op => {
+    const row = op.meta;
+    const result = createResultMap[op.contentId];
+    if (!result || !result.ok) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        stage: "CREATE_COURSE",
+        statusCode: result ? result.statusCode : 0,
+        message: result ? result.message : "No response received for create request."
+      });
+      return;
+    }
+
+    if (!result.body || !result.body.id) {
+      errors.push({
+        rowNumber: row.rowNumber,
+        stage: "CREATE_COURSE",
+        statusCode: result.statusCode || 200,
+        message: "Course created response did not include a course ID."
+      });
+      return;
+    }
+
+    createdForTeacherPhase.push({
+      rowNumber: row.rowNumber,
+      name: row.name,
+      section: row.section,
+      teacherEmail: row.teacherEmail,
+      course: result.body
+    });
+  });
+
+  const teacherOps = createdForTeacherPhase.map(item => ({
+    contentId: `teacher-row-${item.rowNumber}`,
+    method: "POST",
+    path: `/v1/courses/${encodeURIComponent(item.course.id)}/teachers`,
+    body: { userId: item.teacherEmail },
+    meta: item
+  }));
+
+  const teacherResultMap = teacherOps.length > 0
+    ? mapBatchResultsByContentId_(batchExecutor(teacherOps))
+    : {};
+
+  createdForTeacherPhase.forEach(item => {
+    const teacherResult = teacherResultMap[`teacher-row-${item.rowNumber}`];
+    const teacherAssigned = Boolean(teacherResult && teacherResult.ok);
+    if (!teacherAssigned) {
+      errors.push({
+        rowNumber: item.rowNumber,
+        stage: "ADD_TEACHER",
+        statusCode: teacherResult ? teacherResult.statusCode : 0,
+        message: teacherResult ? teacherResult.message : "No response received for teacher assignment."
+      });
+    }
+
+    createdRecords.push({
+      rowNumber: item.rowNumber,
+      courseId: item.course.id,
+      name: item.course.name || item.name,
+      section: item.course.section || item.section || "",
+      ownerId: item.course.ownerId || "me",
+      teacherEmail: item.teacherEmail,
+      enrollmentCode: item.course.enrollmentCode || "",
+      teacherAssigned: teacherAssigned,
+      createdAt: new Date()
+    });
+  });
+
+  return { createdRecords: createdRecords, errors: errors };
+}
+
+function executeBatchOperations_(operations, fetchFn) {
+  if (!operations || operations.length === 0) return [];
+
+  const allResults = [];
+  for (let i = 0; i < operations.length; i += COURSE_BATCH_CONFIG.MAX_CALLS_PER_BATCH) {
+    const chunk = operations.slice(i, i + COURSE_BATCH_CONFIG.MAX_CALLS_PER_BATCH);
+    const chunkResults = executeBatchChunk_(chunk, fetchFn);
+    allResults.push.apply(allResults, chunkResults);
+  }
+  return allResults;
+}
+
+function executeBatchChunk_(operations, fetchFn) {
+  const boundary = `batch_${Utilities.getUuid().replace(/-/g, "")}`;
+  const payload = buildBatchMultipartRequest_(operations, boundary);
+  const fetcher = fetchFn || UrlFetchApp.fetch;
+
+  const response = fetcher(COURSE_BATCH_CONFIG.ENDPOINT, {
+    method: "post",
+    contentType: `multipart/mixed; boundary=${boundary}`,
+    payload: payload,
+    muteHttpExceptions: true,
+    headers: {
+      Authorization: `Bearer ${ScriptApp.getOAuthToken()}`,
+      Accept: "multipart/mixed"
+    }
+  });
+
+  const statusCode = response.getResponseCode ? response.getResponseCode() : 0;
+  const headers = response.getAllHeaders ? response.getAllHeaders() : {};
+  const contentType = getHeaderValueIgnoreCase_(headers, "Content-Type");
+  const responseText = response.getContentText ? response.getContentText() : "";
+
+  if (statusCode >= 400 && String(contentType || "").indexOf("multipart/mixed") === -1) {
+    const parsed = safeJsonParse_(responseText);
+    const message = extractApiErrorMessage_(parsed, responseText || `HTTP ${statusCode}`);
+    return operations.map(op => ({
+      contentId: op.contentId,
+      ok: false,
+      statusCode: statusCode,
+      message: message,
+      body: parsed,
+      rawBody: responseText
+    }));
+  }
+
+  let parsedParts = [];
+  try {
+    parsedParts = parseBatchMultipartResponse_(responseText, contentType);
+  } catch (e) {
+    return operations.map(op => ({
+      contentId: op.contentId,
+      ok: false,
+      statusCode: statusCode || 0,
+      message: `Failed to parse batch response: ${e.message}`,
+      body: null,
+      rawBody: responseText
+    }));
+  }
+  const partMap = {};
+  parsedParts.forEach(part => {
+    partMap[part.contentId] = part;
+  });
+
+  return operations.map(op => {
+    const part = partMap[op.contentId];
+    if (!part) {
+      return {
+        contentId: op.contentId,
+        ok: false,
+        statusCode: 0,
+        message: "No response part returned for this batch request item.",
+        body: null,
+        rawBody: ""
+      };
+    }
+    return {
+      contentId: op.contentId,
+      ok: part.statusCode >= 200 && part.statusCode < 300,
+      statusCode: part.statusCode,
+      message: part.message,
+      body: part.body,
+      rawBody: part.rawBody
+    };
+  });
+}
+
+function buildBatchMultipartRequest_(operations, boundary) {
+  const lines = [];
+  operations.forEach(op => {
+    lines.push(`--${boundary}`);
+    lines.push("Content-Type: application/http");
+    lines.push(`Content-ID: <${op.contentId}>`);
+    lines.push("");
+    lines.push(`${op.method} ${op.path} HTTP/1.1`);
+    lines.push("Host: classroom.googleapis.com");
+    lines.push("Content-Type: application/json; charset=UTF-8");
+    lines.push("Accept: application/json");
+    lines.push("");
+    lines.push(JSON.stringify(op.body || {}));
+    lines.push("");
+  });
+  lines.push(`--${boundary}--`);
+  return lines.join("\r\n");
+}
+
+function parseBatchMultipartResponse_(responseText, contentType) {
+  const boundaryMatch = /boundary="?([^";]+)"?/i.exec(String(contentType || ""));
+  if (!boundaryMatch) {
+    throw new Error("Batch response is missing multipart boundary.");
+  }
+
+  const boundary = boundaryMatch[1];
+  const pieces = String(responseText || "").split(`--${boundary}`);
+  const parsedParts = [];
+
+  pieces.forEach(piece => {
+    let part = piece.trim();
+    if (!part || part === "--") return;
+    if (part.endsWith("--")) {
+      part = part.substring(0, part.length - 2).trim();
+    }
+
+    const normalized = part.replace(/\r\n/g, "\n");
+    const outerHeaderEnd = normalized.indexOf("\n\n");
+    if (outerHeaderEnd === -1) return;
+
+    const outerHeaders = normalized.substring(0, outerHeaderEnd);
+    const contentId = normalizeBatchContentId_(extractOuterContentId_(outerHeaders));
+    if (!contentId) return;
+
+    const embeddedHttp = normalized.substring(outerHeaderEnd + 2).trim();
+    const httpResult = parseEmbeddedHttpResponse_(embeddedHttp);
+    parsedParts.push({
+      contentId: contentId,
+      statusCode: httpResult.statusCode,
+      body: httpResult.body,
+      rawBody: httpResult.rawBody,
+      message: httpResult.message
+    });
+  });
+
+  return parsedParts;
+}
+
+function parseEmbeddedHttpResponse_(httpPayload) {
+  const normalized = String(httpPayload || "").replace(/\r\n/g, "\n").trim();
+  const lines = normalized.split("\n");
+  const statusLine = lines[0] || "";
+  const statusMatch = /^HTTP\/\d+(?:\.\d+)?\s+(\d+)/i.exec(statusLine);
+  const statusCode = statusMatch ? Number(statusMatch[1]) : 0;
+
+  let bodyStart = lines.length;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() === "") {
+      bodyStart = i + 1;
+      break;
+    }
+  }
+
+  const rawBody = lines.slice(bodyStart).join("\n").trim();
+  const body = safeJsonParse_(rawBody);
+  const message = extractApiErrorMessage_(body, rawBody || statusLine);
+
+  return {
+    statusCode: statusCode,
+    body: body,
+    rawBody: rawBody,
+    message: message
+  };
+}
+
+function mapBatchResultsByContentId_(results) {
+  const map = {};
+  (results || []).forEach(item => {
+    if (!item || !item.contentId) return;
+    map[item.contentId] = item;
+  });
+  return map;
+}
+
+function detectBatchDelimiter_(fileName, fileContent) {
+  const lowerFileName = String(fileName || "").toLowerCase();
+  if (lowerFileName.endsWith(".tsv")) return "\t";
+  if (lowerFileName.endsWith(".csv")) return ",";
+
+  const firstLine = String(fileContent || "").replace(/^\uFEFF/, "").split(/\r?\n/)[0] || "";
+  const tabCount = (firstLine.match(/\t/g) || []).length;
+  const commaCount = (firstLine.match(/,/g) || []).length;
+  return tabCount > commaCount ? "\t" : ",";
+}
+
+function parseDelimitedRows_(fileContent, delimiter) {
+  const cleaned = String(fileContent || "").replace(/^\uFEFF/, "").trim();
+  if (!cleaned) throw new Error("Upload file is empty.");
+  const rows = Utilities.parseCsv(cleaned, delimiter);
+  if (!rows || rows.length === 0) throw new Error("Upload file could not be parsed.");
+  return rows;
+}
+
+function mapCourseBatchHeaderIndexes_(headerRow) {
+  const map = {};
+  (headerRow || []).forEach((header, index) => {
+    const normalized = normalizeHeader_(header);
+    const canonicalField = COURSE_BATCH_HEADER_ALIAS_LOOKUP[normalized];
+    if (canonicalField && map[canonicalField] === undefined) {
+      map[canonicalField] = index;
+    }
+  });
+
+  const missing = COURSE_BATCH_REQUIRED_FIELDS.filter(field => map[field] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`Missing required headers: ${missing.join(", ")}.`);
+  }
+  return map;
+}
+
+function normalizeBatchCourseRow_(rawRow, headerMap) {
+  return {
+    name: getRowValue_(rawRow, headerMap.name),
+    section: getRowValue_(rawRow, headerMap.section),
+    teacherEmail: getRowValue_(rawRow, headerMap.teacherEmail).toLowerCase(),
+    description: getRowValue_(rawRow, headerMap.description)
+  };
+}
+
+function isBatchCourseRowEmpty_(rowObj) {
+  return !rowObj.name && !rowObj.section && !rowObj.teacherEmail && !rowObj.description;
+}
+
+function validateBatchCourseRow_(rowObj) {
+  const errors = [];
+  if (!rowObj.name) {
+    errors.push("Course name is required.");
+  }
+  if (!rowObj.teacherEmail) {
+    errors.push("Teacher email is required.");
+  } else if (!isValidEmail_(rowObj.teacherEmail)) {
+    errors.push(`Teacher email is invalid (${rowObj.teacherEmail}).`);
+  }
+  return { valid: errors.length === 0, errors: errors };
+}
+
+function assertBatchRowLimit_(nonEmptyRowCount) {
+  if (nonEmptyRowCount > COURSE_BATCH_CONFIG.MAX_ROWS) {
+    throw new Error(`Upload exceeds row limit (${COURSE_BATCH_CONFIG.MAX_ROWS}).`);
+  }
+}
+
+function getAllActiveCourses_() {
+  const allCourses = [];
+  let pageToken = null;
+  do {
+    const response = Classroom.Courses.list({
+      courseStates: ["ACTIVE"],
+      pageSize: 100,
+      pageToken: pageToken
+    });
+    allCourses.push.apply(allCourses, response.courses || []);
+    pageToken = response.nextPageToken;
+  } while (pageToken);
+  return allCourses;
+}
+
+function getActiveCourseKeySet_() {
+  const keySet = new Set();
+  const courses = getAllActiveCourses_();
+  courses.forEach(course => {
+    keySet.add(buildCourseKey_(course.name || "", course.section || ""));
+  });
+  return keySet;
+}
+
+function buildCourseKey_(name, section) {
+  return `${normalizeCourseKeyPart_(name)}::${normalizeCourseKeyPart_(section)}`;
+}
+
+function normalizeCourseKeyPart_(value) {
+  return String(value || "").trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function ensureCourseSheet_() {
+  const ss = getDBSpreadsheet_();
+  let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_COURSES);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.SHEET_NAME_COURSES);
+    sheet.appendRow(["Course ID", "Name", "Section", "Owner", "Assigned Teacher", "Created At"]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function appendCourseRecordsToSheet_(records) {
+  if (!records || records.length === 0) return;
+  const sheet = ensureCourseSheet_();
+  const values = records.map(record => ([
+    record.courseId,
+    record.name,
+    record.section || "",
+    record.ownerId || "me",
+    record.teacherEmail || "",
+    record.createdAt || new Date()
+  ]));
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, values[0].length).setValues(values);
+}
+
+function normalizeHeader_(value) {
+  return String(value || "")
+    .replace(/^\uFEFF/, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, "");
+}
+
+function getRowValue_(row, index) {
+  if (index === undefined || index === null) return "";
+  return String((row && row[index]) || "").trim();
+}
+
+function isValidEmail_(value) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(value || "").trim());
+}
+
+function escapeDelimitedValue_(value, delimiter) {
+  const text = String(value || "");
+  if (text.indexOf('"') !== -1 || text.indexOf("\n") !== -1 || text.indexOf("\r") !== -1 || text.indexOf(delimiter) !== -1) {
+    return `"${text.replace(/"/g, '""')}"`;
+  }
+  return text;
+}
+
+function safeJsonParse_(value) {
+  if (!value) return null;
+  try {
+    return JSON.parse(value);
+  } catch (e) {
+    return null;
+  }
+}
+
+function extractOuterContentId_(headerText) {
+  const match = /Content-ID:\s*<?([^>\n]+)>?/i.exec(String(headerText || ""));
+  return match ? match[1].trim() : "";
+}
+
+function normalizeBatchContentId_(value) {
+  if (!value) return "";
+  return String(value).replace(/^response-/, "").trim();
+}
+
+function getHeaderValueIgnoreCase_(headers, key) {
+  const target = String(key || "").toLowerCase();
+  for (const headerName in headers) {
+    if (headerName.toLowerCase() === target) {
+      const headerValue = headers[headerName];
+      if (Array.isArray(headerValue)) return headerValue.join("; ");
+      return String(headerValue);
+    }
+  }
+  return "";
+}
+
+function extractApiErrorMessage_(body, fallback) {
+  if (body && body.error) {
+    if (typeof body.error === "string") return body.error;
+    if (body.error.message) return body.error.message;
+  }
+  if (body && body.message) return body.message;
+  if (fallback) return String(fallback).substring(0, 500);
+  return "Unknown error.";
 }
 
 /* =========================================
