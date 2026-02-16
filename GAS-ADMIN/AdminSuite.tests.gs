@@ -16,7 +16,11 @@ function runBatchCourseUnitTests() {
     test_buildAndParseMultipart,
     test_executeBatchOperations_chunking,
     test_runCourseBatchPhases_continueOnError,
-    test_getCourseBatchTemplate_csv_tsv
+    test_getCourseBatchTemplate_csv_tsv,
+    test_buildBatchCreateLogDetail_includesPartialTeacherFailure,
+    test_removeDriveFileWithCompatibility_prefersDelete,
+    test_removeDriveFileWithCompatibility_usesRemoveFallback,
+    test_removeDriveFileWithCompatibility_permissionFallbackToTrash
   ];
 
   let passCount = 0;
@@ -231,6 +235,63 @@ function test_getCourseBatchTemplate_csv_tsv() {
   assertTrue_(tsv.filename.endsWith(".tsv"), "TSV template filename.");
   assertTrue_(csv.content.indexOf("teacherEmail") !== -1, "CSV template should include required headers.");
   assertTrue_(tsv.content.indexOf("\t") !== -1, "TSV template should use tab delimiter.");
+}
+
+function test_buildBatchCreateLogDetail_includesPartialTeacherFailure() {
+  const detail = buildBatchCreateLogDetail_({
+    summary: { totalRows: 2, created: 1, partial: 1, skipped: 0, errors: 1 },
+    created: [{
+      rowNumber: 3,
+      courseId: "c3",
+      teacherEmail: "teacher2@example.edu",
+      teacherStatus: "FAILED",
+      teacherError: "Permission denied"
+    }]
+  });
+  assertTrue_(detail.indexOf("Partial details:") !== -1, "Log detail should include partial details section.");
+  assertTrue_(detail.indexOf("row 3") !== -1, "Log detail should include failed row number.");
+  assertTrue_(detail.indexOf("Permission denied") !== -1, "Log detail should include teacher assignment failure reason.");
+}
+
+function test_removeDriveFileWithCompatibility_prefersDelete() {
+  let deleteCalled = 0;
+  let removeCalled = 0;
+  const fakeApi = {
+    delete: function() { deleteCalled++; },
+    remove: function() { removeCalled++; }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(result.mode, "DELETED", "Delete result mode should be DELETED.");
+  assertEqual_(deleteCalled, 1, "Compatibility delete should call delete() first when available.");
+  assertEqual_(removeCalled, 0, "Remove fallback should not be used when delete succeeds.");
+}
+
+function test_removeDriveFileWithCompatibility_usesRemoveFallback() {
+  let removeCalled = 0;
+  const fakeApi = {
+    remove: function() { removeCalled++; }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(result.mode, "DELETED", "Delete result mode should be DELETED.");
+  assertEqual_(removeCalled, 1, "Compatibility delete should fallback to remove() when delete() is unavailable.");
+}
+
+function test_removeDriveFileWithCompatibility_permissionFallbackToTrash() {
+  let deleteCalled = 0;
+  let updateCalled = 0;
+  const fakeApi = {
+    delete: function() {
+      deleteCalled++;
+      throw new Error("insufficientFilePermissions: organizer role required");
+    },
+    update: function() {
+      updateCalled++;
+    }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(deleteCalled, 1, "Delete should be attempted once.");
+  assertEqual_(updateCalled, 1, "Trash fallback should call update(trashed=true).");
+  assertEqual_(result.mode, "TRASHED", "Permission error should fallback to trash.");
 }
 
 function createFakeResponse_(statusCode, headers, body) {

@@ -578,7 +578,12 @@
       const summary = result.summary || {};
       const statusClass = (summary.errors || summary.partial) ? "alert-warning" : "alert-success";
       const createdHtml = (result.created || []).length
-        ? `<div class="mt-2"><strong>Created (${result.created.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.created.map(item => `<li>Row ${item.rowNumber}: ${escapeHtml(item.name)} (${escapeHtml(item.section || "-")}) - ${escapeHtml(item.teacherStatus)}</li>`).join("")}</ul></div>`
+        ? `<div class="mt-2"><strong>Created (${result.created.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.created.map(item => {
+            const detail = item.teacherStatus === "FAILED" && item.teacherError
+              ? ` (Teacher error: ${escapeHtml(item.teacherError)})`
+              : "";
+            return `<li>Row ${item.rowNumber}: ${escapeHtml(item.name)} (${escapeHtml(item.section || "-")}) - ${escapeHtml(item.teacherStatus)}${detail}</li>`;
+          }).join("")}</ul></div>`
         : "";
       const skippedHtml = (result.skipped || []).length
         ? `<div class="mt-2"><strong>Skipped (${result.skipped.length})</strong><ul class="mb-0 ps-3 batch-result-scroll">${result.skipped.map(item => `<li>Row ${item.rowNumber}: ${escapeHtml(item.reason)}</li>`).join("")}</ul></div>`

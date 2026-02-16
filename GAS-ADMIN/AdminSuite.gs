@@ -1,6 +1,6 @@
 /**
  * Project: Domain Admin Suite
- * Version: 1.8.5
+ * Version: 1.8.7
  * Updated: 2026-02-16 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Directory, Drive).
  * * CORE FEATURES:
@@ -21,7 +21,7 @@
  * @include https://www.googleapis.com/auth/drive
  */
 
-const APP_VERSION = "1.8.5";
+const APP_VERSION = "1.8.7";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -323,7 +323,8 @@ function processBatchCourseUpload(fileName, fileContent) {
     section: record.section,
     teacherEmail: record.teacherEmail,
     enrollmentCode: record.enrollmentCode || "",
-    teacherStatus: record.teacherAssigned ? "ASSIGNED" : "FAILED"
+    teacherStatus: record.teacherAssigned ? "ASSIGNED" : "FAILED",
+    teacherError: record.teacherError || ""
   }));
 
   const result = {
@@ -347,7 +348,7 @@ function processBatchCourseUpload(fileName, fileContent) {
     "BATCH_CREATE_COURSES",
     result.fileName,
     "COMPLETE",
-    `Rows: ${result.summary.totalRows}, Created: ${result.summary.created}, Partial: ${result.summary.partial}, Skipped: ${result.summary.skipped}, Errors: ${result.summary.errors}`
+    buildBatchCreateLogDetail_(result)
   );
 
   return result;
@@ -363,8 +364,8 @@ function getCourseBatchTemplate(format) {
 
   const templateRows = [
     COURSE_BATCH_CONFIG.TEMPLATE_HEADERS,
-    ["Math 7A", "2026-Spring", "teacher01@example.edu", "Grade 7 math class"],
-    ["Science 8B", "2026-Spring", "teacher02@example.edu", "Grade 8 science class"]
+    ["Math 6A", "2026-Spring", "teacher01@example.edu", "Grade 6 math class"],
+    ["Science 5B", "2026-Spring", "teacher02@example.edu", "Grade 5 science class"]
   ];
 
   const content = templateRows
@@ -450,12 +451,15 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   createdForTeacherPhase.forEach(item => {
     const teacherResult = teacherResultMap[`teacher-row-${item.rowNumber}`];
     const teacherAssigned = Boolean(teacherResult && teacherResult.ok);
+    const teacherError = teacherAssigned
+      ? ""
+      : (teacherResult ? teacherResult.message : "No response received for teacher assignment.");
     if (!teacherAssigned) {
       errors.push({
         rowNumber: item.rowNumber,
         stage: "ADD_TEACHER",
         statusCode: teacherResult ? teacherResult.statusCode : 0,
-        message: teacherResult ? teacherResult.message : "No response received for teacher assignment."
+        message: teacherError
       });
     }
 
@@ -468,6 +472,7 @@ function runCourseBatchPhases_(rows, batchExecutor) {
       teacherEmail: item.teacherEmail,
       enrollmentCode: item.course.enrollmentCode || "",
       teacherAssigned: teacherAssigned,
+      teacherError: teacherError,
       createdAt: new Date()
     });
   });
@@ -847,6 +852,30 @@ function extractApiErrorMessage_(body, fallback) {
   return "Unknown error.";
 }
 
+function buildBatchCreateLogDetail_(result) {
+  const summary = result && result.summary ? result.summary : {};
+  const base = `Rows: ${summary.totalRows || 0}, Created: ${summary.created || 0}, Partial: ${summary.partial || 0}, Skipped: ${summary.skipped || 0}, Errors: ${summary.errors || 0}`;
+  const partialRows = (result && result.created ? result.created : []).filter(item => item.teacherStatus === "FAILED");
+  if (partialRows.length === 0) {
+    return base;
+  }
+
+  const details = partialRows.slice(0, 10).map(item => {
+    const reason = item.teacherError || "Unknown teacher assignment error";
+    return `row ${item.rowNumber} (courseId=${item.courseId}, teacher=${item.teacherEmail}): ${reason}`;
+  }).join(" | ");
+
+  const extraCount = partialRows.length > 10 ? ` (+${partialRows.length - 10} more)` : "";
+  return truncateLogDetail_(`${base}; Partial details: ${details}${extraCount}`, 3500);
+}
+
+function truncateLogDetail_(text, maxLength) {
+  const value = String(text || "");
+  const limit = Number(maxLength) || 3500;
+  if (value.length <= limit) return value;
+  return value.substring(0, limit - 3) + "...";
+}
+
 /* =========================================
    FEATURE 2: USER MANAGEMENT (Admin SDK)
    ========================================= */
@@ -1075,10 +1104,18 @@ function findOutdatedFiles(dateString) {
  */
 function manageFiles(fileIds, action) {
   let count = 0;
+  let deleteCount = 0;
+  let trashedFallbackCount = 0;
+  const errors = [];
   fileIds.forEach(id => {
     try {
       if (action === 'delete') {
-        Drive.Files.delete(id, { supportsAllDrives: true });
+        const outcome = removeDriveFileWithCompatibility_(id);
+        if (outcome.mode === "TRASHED") {
+          trashedFallbackCount++;
+        } else {
+          deleteCount++;
+        }
       } else if (action === 'archive') {
         // v3 uses 'update' for partial updates and 'name' for renaming
         const file = Drive.Files.get(id, { supportsAllDrives: true, fields: "id,name" });
@@ -1086,13 +1123,161 @@ function manageFiles(fileIds, action) {
       }
       count++;
     } catch (e) {
+      errors.push(`${id}: ${e.message}`);
       console.error(`Error processing ${id}:`, e);
     }
   });
   
   const verb = action === 'delete' ? 'Deleted' : 'Archived';
-  logSystemAction_("MANAGE_FILES", "Batch", "SUCCESS", `${verb} ${count} files`);
-  return `Successfully ${verb.toLowerCase()} ${count} items.`;
+  const hasFallbackTrash = action === 'delete' && trashedFallbackCount > 0;
+  const status = errors.length === 0
+    ? (hasFallbackTrash ? "PARTIAL" : "SUCCESS")
+    : (count > 0 ? "PARTIAL" : "FAILED");
+  const fallbackText = hasFallbackTrash
+    ? `; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)`
+    : "";
+  const errorPreview = errors.length > 0 ? `; Errors: ${errors.slice(0, 5).join(" | ")}` : "";
+  if (action === 'delete') {
+    logSystemAction_(
+      "MANAGE_FILES",
+      "Batch",
+      status,
+      truncateLogDetail_(`Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}`, 3500)
+    );
+  } else {
+    logSystemAction_(
+      "MANAGE_FILES",
+      "Batch",
+      status,
+      truncateLogDetail_(`${verb} ${count}/${fileIds.length} files${errorPreview}`, 3500)
+    );
+  }
+
+  if (errors.length === 0 && !hasFallbackTrash) {
+    return `Successfully ${verb.toLowerCase()} ${count} items.`;
+  }
+  if (action === 'delete') {
+    const base = `Deleted ${deleteCount} item(s).`;
+    const fallbackNote = hasFallbackTrash ? ` Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).` : "";
+    const errorNote = errors.length > 0 ? ` Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}` : "";
+    return `${base}${fallbackNote}${errorNote}`.trim();
+  }
+  return `${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}`;
+}
+
+function removeDriveFileWithCompatibility_(fileId, filesApi) {
+  const api = filesApi || (Drive && Drive.Files ? Drive.Files : null);
+  if (!api) throw new Error("Drive.Files API is unavailable.");
+
+  try {
+    deleteDriveFilePermanently_(api, fileId);
+    return { mode: "DELETED" };
+  } catch (deleteError) {
+    if (!isDeletePermissionError_(deleteError)) {
+      throw deleteError;
+    }
+
+    try {
+      trashDriveFileWithCompatibility_(api, fileId);
+      return {
+        mode: "TRASHED",
+        message: buildDeletePermissionNote_(deleteError)
+      };
+    } catch (trashError) {
+      throw new Error(`${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}`);
+    }
+  }
+}
+
+function deleteDriveFilePermanently_(api, fileId) {
+  if (typeof api.delete === "function") {
+    try {
+      api.delete(fileId, { supportsAllDrives: true });
+      return;
+    } catch (e) {
+      if (isMethodSignatureError_(e)) {
+        api.delete(fileId);
+        return;
+      }
+      throw e;
+    }
+  }
+
+  if (typeof api.remove === "function") {
+    try {
+      api.remove(fileId, { supportsAllDrives: true });
+      return;
+    } catch (e) {
+      if (isMethodSignatureError_(e)) {
+        api.remove(fileId);
+        return;
+      }
+      throw e;
+    }
+  }
+
+  throw new Error("Drive.Files.delete/remove is not available in this runtime.");
+}
+
+function trashDriveFileWithCompatibility_(api, fileId) {
+  if (typeof api.update === "function") {
+    try {
+      api.update({ trashed: true }, fileId, null, { supportsAllDrives: true, fields: "id,trashed" });
+      return;
+    } catch (e) {
+      if (isMethodSignatureError_(e)) {
+        try {
+          api.update({ trashed: true }, fileId, { supportsAllDrives: true, fields: "id,trashed" });
+          return;
+        } catch (legacyE) {
+          if (isMethodSignatureError_(legacyE)) {
+            api.update({ trashed: true }, fileId);
+            return;
+          }
+          throw legacyE;
+        }
+      }
+      throw e;
+    }
+  }
+
+  if (typeof api.trash === "function") {
+    api.trash(fileId);
+    return;
+  }
+
+  throw new Error("Drive.Files.update/trash is not available in this runtime.");
+}
+
+function isDeletePermissionError_(err) {
+  const text = getExceptionMessage_(err).toLowerCase();
+  return text.indexOf("insufficientfilepermissions") !== -1 ||
+    text.indexOf("insufficient permissions") !== -1 ||
+    text.indexOf("forbidden") !== -1 ||
+    text.indexOf("cannotdelete") !== -1 ||
+    text.indexOf("organizer") !== -1 ||
+    text.indexOf("403") !== -1;
+}
+
+function isMethodSignatureError_(err) {
+  const text = getExceptionMessage_(err).toLowerCase();
+  return text.indexOf("typeerror") !== -1 ||
+    text.indexOf("invalid argument") !== -1 ||
+    text.indexOf("invalid number of arguments") !== -1 ||
+    text.indexOf("unexpected argument") !== -1 ||
+    text.indexOf("too many arguments") !== -1;
+}
+
+function buildDeletePermissionNote_(deleteError) {
+  const errorText = getExceptionMessage_(deleteError);
+  return `Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.`;
+}
+
+function getExceptionMessage_(err) {
+  if (!err) return "Unknown error";
+  if (typeof err === "string") return err;
+  if (err.message) return String(err.message);
+  return String(err);
 }
 
 /* =========================================
