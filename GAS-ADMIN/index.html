@@ -58,6 +58,14 @@
     /* Filter Bars */
     .filters-bar { background-color: #fff; padding: 15px; border-radius: 8px; border: 1px solid #eee; margin-bottom: 15px; }
     .batch-result-scroll { max-height: 220px; overflow-y: auto; }
+
+    /* Email Editor specific */
+    textarea.code-editor {
+      font-family: 'Consolas', 'Monaco', monospace;
+      font-size: 0.9rem;
+      background-color: #2d2d2d;
+      color: #f8f8f2;
+    }
   </style>
 </head>
 <body>
@@ -93,6 +101,10 @@
       </li>
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="drive-tab" data-bs-toggle="tab" data-bs-target="#drive" type="button">Drive Audit</button>
+      </li>
+      <!-- Feature 5: New Tab -->
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="email-tab" data-bs-toggle="tab" data-bs-target="#email" type="button">Email Notify</button>
       </li>
     </ul>
 
@@ -233,7 +245,7 @@
                       <option value="" disabled selected>Select OU...</option>
                       <!-- Populated via JS initOUs -->
                     </select>
-                    <button class="btn btn-outline-primary" onclick="loadStudentsFromOu()">Load</button>
+                    <button class="btn btn-outline-primary" onclick="loadStudentsFromOu('classOuSelect', 'studentCheckList')">Load</button>
                   </div>
                 </div>
 
@@ -398,6 +410,81 @@
         </div>
       </div>
 
+      <!-- ==================== TAB 4: EMAIL NOTIFICATION (Feature 5) ==================== -->
+      <div class="tab-pane fade" id="email" role="tabpanel">
+        <div class="row h-100">
+            
+            <!-- Left: Receiver Selection -->
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-header bg-white fw-bold">
+                        <i class="bi bi-person-check"></i> 1. Select Recipients
+                    </div>
+                    <div class="card-body d-flex flex-column">
+                        <div class="mb-3">
+                            <label class="form-label small text-muted fw-bold">SOURCE OU</label>
+                            <div class="input-group">
+                                <select id="emailOuSelect" class="form-select form-select-sm">
+                                    <option value="" disabled selected>Select OU...</option>
+                                    <!-- Populated via JS initOUs -->
+                                </select>
+                                <button class="btn btn-outline-primary btn-sm" onclick="loadStudentsFromOu('emailOuSelect', 'emailRecipientsList')">Load</button>
+                            </div>
+                        </div>
+
+                        <div class="mb-3 flex-grow-1 position-relative">
+                            <div id="emailRecipientsList" class="checklist-scroll h-100">
+                                <div class="text-center text-muted mt-5">
+                                    <small>Select an OU and click "Load"</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right: Email Editor -->
+            <div class="col-lg-8">
+                <div class="card h-100">
+                    <div class="card-header bg-white fw-bold d-flex justify-content-between">
+                        <span><i class="bi bi-envelope-paper"></i> 2. Compose Email</span>
+                        <div class="dropdown">
+                            <button class="btn btn-sm btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
+                                Insert Variable
+                            </button>
+                            <ul class="dropdown-menu">
+                                <li><a class="dropdown-item" href="#" onclick="insertAtCursor('{name}')">User Name {name}</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="insertAtCursor('{email}')">User Email {email}</a></li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label small fw-bold">Subject</label>
+                            <input type="text" id="emailSubject" class="form-control" placeholder="e.g., Important Notice regarding your account">
+                        </div>
+                        <div class="mb-3 h-100">
+                            <label class="form-label small fw-bold">Body (HTML Supported)</label>
+                            <textarea id="emailBody" class="form-control code-editor" style="height: 350px;">
+<p>Dear {name},</p>
+<p>This is a notification regarding your account: <b>{email}</b>.</p>
+<p>Please ensure you backup your files immediately.</p>
+<br>
+<p style="color: grey;">IT Admin Team</p>
+                            </textarea>
+                        </div>
+                    </div>
+                    <div class="card-footer bg-white text-end">
+                        <button class="btn btn-primary px-4" onclick="sendBatchEmail()">
+                            <i class="bi bi-send"></i> Send Email to Selected
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+        </div>
+      </div>
+
     </div>
   </div>
 
@@ -423,8 +510,14 @@
       document.getElementById('loadingOverlay').style.display = isLoading ? 'flex' : 'none';
     }
 
+    // UPDATED: Toggle logic to support multiple tabs
     function toggleAll(source, selector) {
-      document.querySelectorAll(selector).forEach(cb => cb.checked = source.checked);
+      const container = source.closest('.checklist-scroll') || source.closest('table');
+      if (container) {
+          container.querySelectorAll(selector).forEach(cb => cb.checked = source.checked);
+      } else {
+          document.querySelectorAll(selector).forEach(cb => cb.checked = source.checked);
+      }
     }
 
     function getCheckedValues(selector) {
@@ -462,6 +555,10 @@
         // 4. Target Move (User Lifecycle Tab)
         const targetMove = document.getElementById('targetOuSelect');
         if(targetMove) targetMove.innerHTML = '<option value="" disabled selected>Select Target OU...</option>' + options;
+        
+        // 5. Email Source (Feature 5)
+        const emailSource = document.getElementById('emailOuSelect');
+        if(emailSource) emailSource.innerHTML = '<option value="" disabled selected>Select OU...</option>' + options;
 
       }).withFailureHandler(err => {
         // setLoader(false);
@@ -634,34 +731,39 @@
       }).getFilteredUsers(ouPath, "ALL", null);
     }
 
-    function loadStudentsFromOu() {
-      const ou = document.getElementById('classOuSelect').value;
-      // Fixed: Check specifically for empty string or null, as "Select OU..." text is no longer the value
+    // UPDATED: Now reusable for both Classroom and Email tabs
+    function loadStudentsFromOu(selectId, containerId) {
+      const selectEl = document.getElementById(selectId || 'classOuSelect');
+      const containerEl = document.getElementById(containerId || 'studentCheckList');
+      const ou = selectEl.value;
+
       if (!ou) return alert("Please select an OU first.");
       
-      setLoader(true, `Loading students from ${ou}...`);
+      setLoader(true, `Loading users from ${ou}...`);
       google.script.run.withSuccessHandler(users => {
         setLoader(false);
-        const container = document.getElementById('studentCheckList');
-        container.innerHTML = '';
+        containerEl.innerHTML = '';
         
         if (users.length === 0) {
-          container.innerHTML = '<div class="text-center text-muted mt-3">No active students found in this OU.</div>';
+          containerEl.innerHTML = '<div class="text-center text-muted mt-3">No active users found in this OU.</div>';
           return;
         }
 
-        container.innerHTML = `
+        // Differentiate checkbox class for Email vs Classroom
+        const checkClass = (containerId === 'emailRecipientsList') ? 'email-check' : 'student-check';
+
+        containerEl.innerHTML = `
           <div class="form-check border-bottom pb-2 mb-2">
-            <input class="form-check-input" type="checkbox" onchange="toggleAll(this, '.student-check')">
+            <input class="form-check-input" type="checkbox" onchange="toggleAll(this, '.${checkClass}')">
             <label class="form-check-label fw-bold">Select All (${users.length})</label>
           </div>
         `;
 
         users.forEach(u => {
-          container.innerHTML += `
+          containerEl.innerHTML += `
             <div class="form-check">
-              <input class="form-check-input student-check" type="checkbox" value="${u.email}" id="stu_${u.email}">
-              <label class="form-check-label small" for="stu_${u.email}">
+              <input class="form-check-input ${checkClass}" type="checkbox" value="${u.email}" id="${checkClass}_${u.email}">
+              <label class="form-check-label small" for="${checkClass}_${u.email}">
                 ${u.name} <span class="text-muted">(${u.email})</span>
               </label>
             </div>
@@ -853,6 +955,47 @@
         setLoader(false);
         alert("Connection Error: " + err.message);
       }).testApiConnection();
+    }
+
+    // --- FEATURE 5: EMAIL FUNCTIONS ---
+
+    function insertAtCursor(text) {
+        const myField = document.getElementById("emailBody");
+        if (document.selection) {
+            myField.focus();
+            sel = document.selection.createRange();
+            sel.text = text;
+        } else if (myField.selectionStart || myField.selectionStart == '0') {
+            var startPos = myField.selectionStart;
+            var endPos = myField.selectionEnd;
+            myField.value = myField.value.substring(0, startPos)
+                + text
+                + myField.value.substring(endPos, myField.value.length);
+        } else {
+            myField.value += text;
+        }
+    }
+
+    function sendBatchEmail() {
+        const recipients = getCheckedValues('.email-check');
+        const subject = document.getElementById('emailSubject').value;
+        const body = document.getElementById('emailBody').value;
+
+        if (recipients.length === 0) return alert("Please select at least one recipient.");
+        if (!subject.trim()) return alert("Subject cannot be empty.");
+        if (!body.trim()) return alert("Email body cannot be empty.");
+
+        if (!confirm(`Ready to send email to ${recipients.length} users?`)) return;
+
+        setLoader(true, `Sending ${recipients.length} emails...`);
+        
+        google.script.run.withSuccessHandler(res => {
+            setLoader(false);
+            alert(res.message);
+        }).withFailureHandler(err => {
+            setLoader(false);
+            alert("Email Error: " + err.message);
+        }).sendCustomEmailBatch(recipients, subject, body);
     }
   </script>
 </body>

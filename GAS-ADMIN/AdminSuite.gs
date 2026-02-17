@@ -1,14 +1,15 @@
 /**
  * Project: Domain Admin Suite
- * Version: 1.8.7
- * Updated: 2026-02-16 (Timezone UTC+8)
- * Description: Comprehensive Admin System (Classroom, Directory, Drive).
+ * Version: 1.9.0
+ * Updated: 2026-02-18 (Timezone UTC+8)
+ * Description: Comprehensive Admin System (Classroom, Directory, Drive, Email).
  * * CORE FEATURES:
- * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU
+ * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Directory: Inactive User Detection, Suspend, Move OU
  * 3. Lifecycle: Automated deletion of suspended accounts after 3 months
- * 4. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive
- * 5. Logging: Centralized logging to Spreadsheet (UTC+8)
+ * 4. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive with Trash fallback
+ * 5. Email: Custom HTML notification sending with variable support ({name}, {email})
+ * 6. Logging: Centralized logging to Spreadsheet (UTC+8)
  * * * REQUIRED SCOPES:
  * @include https://www.googleapis.com/auth/script.scriptapp
  * @include https://www.googleapis.com/auth/script.external_request
@@ -19,14 +20,16 @@
  * @include https://www.googleapis.com/auth/admin.directory.user
  * @include https://www.googleapis.com/auth/admin.directory.orgunit
  * @include https://www.googleapis.com/auth/drive
+ * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "1.8.7";
+const APP_VERSION = "1.9.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
   SHEET_NAME_LOGS: "Classroom_Logs",
   SHEET_NAME_ACTIONS: "Action_Logs",
+  SHEET_NAME_EMAILS: "Email_Logs", // New Log Sheet for Feature 5
   PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
 };
 
@@ -70,7 +73,7 @@ function doGet(e) {
   template.appVersion = APP_VERSION;
   
   return template.evaluate()
-    .setTitle(`Domain Admin Suite v${APP_VERSION}`)
+    .setTitle('Domain Admin Suite v${APP_VERSION}')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
@@ -149,9 +152,9 @@ function createClassroomCourse(payload) {
     if (payload.teacherEmail && payload.teacherEmail !== "me") {
       try {
         Classroom.Courses.Teachers.create({ userId: payload.teacherEmail }, created.id);
-        teacherStatus = `Teacher added: ${payload.teacherEmail}`;
+        teacherStatus = 'Teacher added: ${payload.teacherEmail}';
       } catch (e) {
-        teacherStatus = `Created, but failed to add teacher: ${e.message}`;
+        teacherStatus = 'Created, but failed to add teacher: ${e.message}';
       }
     }
 
@@ -164,7 +167,7 @@ function createClassroomCourse(payload) {
       createdAt: new Date()
     }]);
     
-    logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", `Name: ${created.name}, ${teacherStatus}`);
+    logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", 'Name: ${created.name}, ${teacherStatus}');
     
     return { 
       id: created.id, 
@@ -187,7 +190,7 @@ function listCourses() {
     const response = Classroom.Courses.list({ courseStates: ['ACTIVE'], pageSize: 50 });
     const courses = response.courses || [];
     
-    logSystemAction_("LIST_COURSES", "N/A", "SUCCESS", `Retrieved ${courses.length} courses`);
+    logSystemAction_("LIST_COURSES", "N/A", "SUCCESS", 'Retrieved ${courses.length} courses');
     return courses.map(c => ({ 
       id: c.id, 
       name: c.name, 
@@ -223,7 +226,7 @@ function deleteClassroomCourse(courseId) {
     }
     
     logSystemAction_("DELETE_COURSE", courseId, "SUCCESS", "Course deleted");
-    return `Course ${courseId} deleted successfully.`;
+    return 'Course ${courseId} deleted successfully.';
   } catch (e) {
     logSystemAction_("DELETE_COURSE", courseId, "FAILED", e.message);
     throw new Error("Delete Failed: " + e.message);
@@ -241,11 +244,11 @@ function addStudentsToCourse(courseId, studentEmails) {
     } catch (e) {
       let msg = e.message;
       if (msg.includes("ALREADY_EXISTS")) msg = "Already Enrolled";
-      results.errors.push(`${email}: ${msg}`);
+      results.errors.push('${email}: ${msg}');
     }
   });
-  logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", `Success: ${results.success.length}, Errors: ${results.errors.length}`);
-  return { message: `Processed ${studentEmails.length} students.`, details: results };
+  logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", 'Success: ${results.success.length}, Errors: ${results.errors.length}');
+  return { message: 'Processed ${studentEmails.length} students.', details: results };
 }
 
 /**
@@ -373,7 +376,7 @@ function getCourseBatchTemplate(format) {
     .join("\n");
 
   return {
-    filename: `classroom-course-batch-template.${normalizedFormat}`,
+    filename: 'classroom-course-batch-template.${normalizedFormat}',
     mimeType: mimeType,
     content: content
   };
@@ -388,7 +391,7 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   }
 
   const createOps = rows.map(row => ({
-    contentId: `create-row-${row.rowNumber}`,
+    contentId: 'create-row-${row.rowNumber}',
     method: "POST",
     path: "/v1/courses",
     body: {
@@ -437,9 +440,9 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   });
 
   const teacherOps = createdForTeacherPhase.map(item => ({
-    contentId: `teacher-row-${item.rowNumber}`,
+    contentId: 'teacher-row-${item.rowNumber}',
     method: "POST",
-    path: `/v1/courses/${encodeURIComponent(item.course.id)}/teachers`,
+    path: '/v1/courses/${encodeURIComponent(item.course.id)}/teachers',
     body: { userId: item.teacherEmail },
     meta: item
   }));
@@ -449,7 +452,7 @@ function runCourseBatchPhases_(rows, batchExecutor) {
     : {};
 
   createdForTeacherPhase.forEach(item => {
-    const teacherResult = teacherResultMap[`teacher-row-${item.rowNumber}`];
+    const teacherResult = teacherResultMap['teacher-row-${item.rowNumber}'];
     const teacherAssigned = Boolean(teacherResult && teacherResult.ok);
     const teacherError = teacherAssigned
       ? ""
@@ -493,17 +496,17 @@ function executeBatchOperations_(operations, fetchFn) {
 }
 
 function executeBatchChunk_(operations, fetchFn) {
-  const boundary = `batch_${Utilities.getUuid().replace(/-/g, "")}`;
+  const boundary = 'batch_${Utilities.getUuid().replace(/-/g, "")}';
   const payload = buildBatchMultipartRequest_(operations, boundary);
   const fetcher = fetchFn || UrlFetchApp.fetch;
 
   const response = fetcher(COURSE_BATCH_CONFIG.ENDPOINT, {
     method: "post",
-    contentType: `multipart/mixed; boundary=${boundary}`,
+    contentType: 'multipart/mixed; boundary=${boundary}',
     payload: payload,
     muteHttpExceptions: true,
     headers: {
-      Authorization: `Bearer ${ScriptApp.getOAuthToken()}`,
+      Authorization: 'Bearer ${ScriptApp.getOAuthToken()}',
       Accept: "multipart/mixed"
     }
   });
@@ -515,7 +518,7 @@ function executeBatchChunk_(operations, fetchFn) {
 
   if (statusCode >= 400 && String(contentType || "").indexOf("multipart/mixed") === -1) {
     const parsed = safeJsonParse_(responseText);
-    const message = extractApiErrorMessage_(parsed, responseText || `HTTP ${statusCode}`);
+    const message = extractApiErrorMessage_(parsed, responseText || 'HTTP ${statusCode}');
     return operations.map(op => ({
       contentId: op.contentId,
       ok: false,
@@ -534,7 +537,7 @@ function executeBatchChunk_(operations, fetchFn) {
       contentId: op.contentId,
       ok: false,
       statusCode: statusCode || 0,
-      message: `Failed to parse batch response: ${e.message}`,
+      message: 'Failed to parse batch response: ${e.message}',
       body: null,
       rawBody: responseText
     }));
@@ -570,11 +573,11 @@ function executeBatchChunk_(operations, fetchFn) {
 function buildBatchMultipartRequest_(operations, boundary) {
   const lines = [];
   operations.forEach(op => {
-    lines.push(`--${boundary}`);
+    lines.push('--${boundary}');
     lines.push("Content-Type: application/http");
-    lines.push(`Content-ID: <${op.contentId}>`);
+    lines.push('Content-ID: <${op.contentId}>');
     lines.push("");
-    lines.push(`${op.method} ${op.path} HTTP/1.1`);
+    lines.push('${op.method} ${op.path} HTTP/1.1');
     lines.push("Host: classroom.googleapis.com");
     lines.push("Content-Type: application/json; charset=UTF-8");
     lines.push("Accept: application/json");
@@ -582,7 +585,7 @@ function buildBatchMultipartRequest_(operations, boundary) {
     lines.push(JSON.stringify(op.body || {}));
     lines.push("");
   });
-  lines.push(`--${boundary}--`);
+  lines.push('--${boundary}--');
   return lines.join("\r\n");
 }
 
@@ -593,7 +596,7 @@ function parseBatchMultipartResponse_(responseText, contentType) {
   }
 
   const boundary = boundaryMatch[1];
-  const pieces = String(responseText || "").split(`--${boundary}`);
+  const pieces = String(responseText || "").split('--${boundary}');
   const parsedParts = [];
 
   pieces.forEach(piece => {
@@ -692,7 +695,7 @@ function mapCourseBatchHeaderIndexes_(headerRow) {
 
   const missing = COURSE_BATCH_REQUIRED_FIELDS.filter(field => map[field] === undefined);
   if (missing.length > 0) {
-    throw new Error(`Missing required headers: ${missing.join(", ")}.`);
+    throw new Error('Missing required headers: ${missing.join(", ")}.');
   }
   return map;
 }
@@ -718,14 +721,14 @@ function validateBatchCourseRow_(rowObj) {
   if (!rowObj.teacherEmail) {
     errors.push("Teacher email is required.");
   } else if (!isValidEmail_(rowObj.teacherEmail)) {
-    errors.push(`Teacher email is invalid (${rowObj.teacherEmail}).`);
+    errors.push('Teacher email is invalid (${rowObj.teacherEmail}).');
   }
   return { valid: errors.length === 0, errors: errors };
 }
 
 function assertBatchRowLimit_(nonEmptyRowCount) {
   if (nonEmptyRowCount > COURSE_BATCH_CONFIG.MAX_ROWS) {
-    throw new Error(`Upload exceeds row limit (${COURSE_BATCH_CONFIG.MAX_ROWS}).`);
+    throw new Error('Upload exceeds row limit (${COURSE_BATCH_CONFIG.MAX_ROWS}).');
   }
 }
 
@@ -754,7 +757,7 @@ function getActiveCourseKeySet_() {
 }
 
 function buildCourseKey_(name, section) {
-  return `${normalizeCourseKeyPart_(name)}::${normalizeCourseKeyPart_(section)}`;
+  return '${normalizeCourseKeyPart_(name)}::${normalizeCourseKeyPart_(section)}';
 }
 
 function normalizeCourseKeyPart_(value) {
@@ -806,7 +809,7 @@ function isValidEmail_(value) {
 function escapeDelimitedValue_(value, delimiter) {
   const text = String(value || "");
   if (text.indexOf('"') !== -1 || text.indexOf("\n") !== -1 || text.indexOf("\r") !== -1 || text.indexOf(delimiter) !== -1) {
-    return `"${text.replace(/"/g, '""')}"`;
+    return '"${text.replace(/"/g, '""')}"';
   }
   return text;
 }
@@ -854,7 +857,7 @@ function extractApiErrorMessage_(body, fallback) {
 
 function buildBatchCreateLogDetail_(result) {
   const summary = result && result.summary ? result.summary : {};
-  const base = `Rows: ${summary.totalRows || 0}, Created: ${summary.created || 0}, Partial: ${summary.partial || 0}, Skipped: ${summary.skipped || 0}, Errors: ${summary.errors || 0}`;
+  const base = 'Rows: ${summary.totalRows || 0}, Created: ${summary.created || 0}, Partial: ${summary.partial || 0}, Skipped: ${summary.skipped || 0}, Errors: ${summary.errors || 0}';
   const partialRows = (result && result.created ? result.created : []).filter(item => item.teacherStatus === "FAILED");
   if (partialRows.length === 0) {
     return base;
@@ -862,11 +865,11 @@ function buildBatchCreateLogDetail_(result) {
 
   const details = partialRows.slice(0, 10).map(item => {
     const reason = item.teacherError || "Unknown teacher assignment error";
-    return `row ${item.rowNumber} (courseId=${item.courseId}, teacher=${item.teacherEmail}): ${reason}`;
+    return 'row ${item.rowNumber} (courseId=${item.courseId}, teacher=${item.teacherEmail}): ${reason}';
   }).join(" | ");
 
-  const extraCount = partialRows.length > 10 ? ` (+${partialRows.length - 10} more)` : "";
-  return truncateLogDetail_(`${base}; Partial details: ${details}${extraCount}`, 3500);
+  const extraCount = partialRows.length > 10 ? ' (+${partialRows.length - 10} more)' : "";
+  return truncateLogDetail_('${base}; Partial details: ${details}${extraCount}', 3500);
 }
 
 function truncateLogDetail_(text, maxLength) {
@@ -900,7 +903,7 @@ function getFilteredUsers(ouPath, dateCondition, specificDate) {
   try {
     do {
       let queryParts = [];
-      if (ouPath && ouPath !== "ALL") queryParts.push(`orgUnitPath='${ouPath}'`);
+      if (ouPath && ouPath !== "ALL") queryParts.push('orgUnitPath='${ouPath}'');
       const queryString = queryParts.join(" ");
 
       const options = {
@@ -954,8 +957,8 @@ function moveUsersToOU(emails, targetOU) {
       count++;
     } catch (err) { errors.push(email); }
   });
-  logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", `Moved: ${count}`);
-  return { message: `Moved ${count} users.`, errors: errors };
+  logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", 'Moved: ${count}');
+  return { message: 'Moved ${count} users.', errors: errors };
 }
 
 /* =========================================
@@ -990,8 +993,8 @@ function processUserSuspension(emails) {
       count++;
     } catch (err) {}
   });
-  logSystemAction_("SUSPEND_BATCH", "Batch", "SUCCESS", `Suspended ${count} users.`);
-  return `Suspended ${count} users. Deletion scheduled: ${formattedDeletionDate}.`;
+  logSystemAction_("SUSPEND_BATCH", "Batch", "SUCCESS", 'Suspended ${count} users.');
+  return 'Suspended ${count} users. Deletion scheduled: ${formattedDeletionDate}.';
 }
 
 function syncSuspendedToQueue() {
@@ -1016,7 +1019,7 @@ function syncSuspendedToQueue() {
     });
     pageToken = response.nextPageToken;
   } while (pageToken);
-  return `Added ${syncedCount} suspended accounts to queue.`;
+  return 'Added ${syncedCount} suspended accounts to queue.';
 }
 
 function checkDeletionQueue() {
@@ -1044,7 +1047,7 @@ function checkDeletionQueue() {
     updatedRows.push(row);
   }
   logSheet.getRange(1, 1, updatedRows.length, updatedRows[0].length).setValues(updatedRows);
-  return `Deleted ${deletedCount} accounts.`;
+  return 'Deleted ${deletedCount} accounts.';
 }
 
 /* =========================================
@@ -1060,8 +1063,8 @@ function findOutdatedFiles(dateString) {
   try {
     // 1. Filter Condition: Date Cutoff (One condition)
     if (!dateString) throw new Error("Date string is required (YYYY-MM-DD).");
-    const cutoff = `${dateString}T00:00:00Z`;
-    const query = `modifiedTime < '${cutoff}' and trashed = false`;
+    const cutoff = '${dateString}T00:00:00Z';
+    const query = 'modifiedTime < '${cutoff}' and trashed = false';
     
     // 2. Fixed Sort Logic: Largest First, then Oldest
     const orderBy = "quotaBytesUsed desc, modifiedTime"; 
@@ -1080,7 +1083,7 @@ function findOutdatedFiles(dateString) {
     // 4. Parse Response
     const items = response.files || [];
     
-    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS", `Found ${items.length} files. Sort: ${orderBy}`);
+    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS", 'Found ${items.length} files. Sort: ${orderBy}');
 
     // 5. Map to UI format
     return items.map(f => ({
@@ -1119,12 +1122,12 @@ function manageFiles(fileIds, action) {
       } else if (action === 'archive') {
         // v3 uses 'update' for partial updates and 'name' for renaming
         const file = Drive.Files.get(id, { supportsAllDrives: true, fields: "id,name" });
-        Drive.Files.update({ name: `[ARCHIVED]_` + file.name }, id, { supportsAllDrives: true });
+        Drive.Files.update({ name: '[ARCHIVED]_' + file.name }, id, { supportsAllDrives: true });
       }
       count++;
     } catch (e) {
-      errors.push(`${id}: ${e.message}`);
-      console.error(`Error processing ${id}:`, e);
+      errors.push('${id}: ${e.message}');
+      console.error('Error processing ${id}:', e);
     }
   });
   
@@ -1134,35 +1137,35 @@ function manageFiles(fileIds, action) {
     ? (hasFallbackTrash ? "PARTIAL" : "SUCCESS")
     : (count > 0 ? "PARTIAL" : "FAILED");
   const fallbackText = hasFallbackTrash
-    ? `; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)`
+    ? '; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)'
     : "";
-  const errorPreview = errors.length > 0 ? `; Errors: ${errors.slice(0, 5).join(" | ")}` : "";
+  const errorPreview = errors.length > 0 ? '; Errors: ${errors.slice(0, 5).join(" | ")}' : "";
   if (action === 'delete') {
     logSystemAction_(
       "MANAGE_FILES",
       "Batch",
       status,
-      truncateLogDetail_(`Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}`, 3500)
+      truncateLogDetail_('Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}', 3500)
     );
   } else {
     logSystemAction_(
       "MANAGE_FILES",
       "Batch",
       status,
-      truncateLogDetail_(`${verb} ${count}/${fileIds.length} files${errorPreview}`, 3500)
+      truncateLogDetail_('${verb} ${count}/${fileIds.length} files${errorPreview}', 3500)
     );
   }
 
   if (errors.length === 0 && !hasFallbackTrash) {
-    return `Successfully ${verb.toLowerCase()} ${count} items.`;
+    return 'Successfully ${verb.toLowerCase()} ${count} items.';
   }
   if (action === 'delete') {
-    const base = `Deleted ${deleteCount} item(s).`;
-    const fallbackNote = hasFallbackTrash ? ` Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).` : "";
-    const errorNote = errors.length > 0 ? ` Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}` : "";
-    return `${base}${fallbackNote}${errorNote}`.trim();
+    const base = 'Deleted ${deleteCount} item(s).';
+    const fallbackNote = hasFallbackTrash ? ' Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).' : "";
+    const errorNote = errors.length > 0 ? ' Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}' : "";
+    return '${base}${fallbackNote}${errorNote}'.trim();
   }
-  return `${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}`;
+  return '${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}';
 }
 
 function removeDriveFileWithCompatibility_(fileId, filesApi) {
@@ -1184,7 +1187,7 @@ function removeDriveFileWithCompatibility_(fileId, filesApi) {
         message: buildDeletePermissionNote_(deleteError)
       };
     } catch (trashError) {
-      throw new Error(`${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}`);
+      throw new Error('${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}');
     }
   }
 }
@@ -1270,7 +1273,7 @@ function isMethodSignatureError_(err) {
 
 function buildDeletePermissionNote_(deleteError) {
   const errorText = getExceptionMessage_(deleteError);
-  return `Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.`;
+  return 'Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.';
 }
 
 function getExceptionMessage_(err) {
@@ -1281,10 +1284,80 @@ function getExceptionMessage_(err) {
 }
 
 /* =========================================
+   FEATURE 5: EMAIL NOTIFICATION (Gmail API)
+   ========================================= */
+
+/**
+ * Sends a custom email to a list of users.
+ * Supports simple template variables: {name} and {email}
+ */
+function sendCustomEmailBatch(recipientEmails, subject, bodyTemplate) {
+  if (!recipientEmails || recipientEmails.length === 0) throw new Error("No recipients defined.");
+  if (!subject || !bodyTemplate) throw new Error("Subject and Body are required.");
+
+  // Init Logs
+  const ss = getDBSpreadsheet_();
+  let logSheet = ss.getSheetByName(CONFIG.SHEET_NAME_EMAILS);
+  if (!logSheet) {
+    logSheet = ss.insertSheet(CONFIG.SHEET_NAME_EMAILS);
+    logSheet.appendRow(["Timestamp", "Recipient", "Subject", "Status", "Sender"]);
+  }
+
+  let successCount = 0;
+  let failCount = 0;
+
+  // We need names for replacement, so we might need to fetch user details.
+  // Efficiency: Fetching user details one by one is slow. 
+  // Optimization: We assume recipientEmails is just emails. 
+  // If customization {name} is used, we must fetch user info.
+  const needsName = bodyTemplate.includes("{name}");
+
+  recipientEmails.forEach(email => {
+    try {
+      let finalBody = bodyTemplate;
+      let userName = "";
+
+      if (needsName) {
+        try {
+          // Fetch user name via AdminDirectory
+          const user = AdminDirectory.Users.get(email, { fields: 'name(fullName)' });
+          userName = user.name.fullName;
+        } catch (e) {
+          userName = email.split('@')[0]; // Fallback if user not found or external
+        }
+        // Replace All {name} occurrences
+        finalBody = finalBody.replace(/{name}/g, userName);
+      }
+      
+      // Replace {email}
+      finalBody = finalBody.replace(/{email}/g, email);
+
+      // Send using GmailApp (Standard GAS implementation of Gmail API)
+      GmailApp.sendEmail(email, subject, "", {
+        htmlBody: finalBody,
+        name: "Domain Admin System"
+      });
+
+      // Log success
+      logSheet.appendRow([new Date(), email, subject, "SENT", Session.getActiveUser().getEmail()]);
+      successCount++;
+
+    } catch (e) {
+      console.error('Failed to send to ${email}: ${e.message}');
+      logSheet.appendRow([new Date(), email, subject, "ERROR: " + e.message, Session.getActiveUser().getEmail()]);
+      failCount++;
+    }
+  });
+
+  logSystemAction_("SEND_EMAIL", "Batch", "COMPLETE", 'Sent: ${successCount}, Failed: ${failCount}');
+  return { message: 'Email sending complete.\nSuccess: ${successCount}\nFailed: ${failCount}', successCount, failCount };
+}
+
+/* =========================================
    UTILITIES
    ========================================= */
 
 function testApiConnection() {
   const user = Session.getActiveUser().getEmail();
-  return `Connected as ${user}`;
+  return 'Connected as ${user}';
 }
