@@ -18,6 +18,13 @@ function runBatchCourseUnitTests() {
     test_runCourseBatchPhases_continueOnError,
     test_getCourseBatchTemplate_csv_tsv,
     test_buildBatchCreateLogDetail_includesPartialTeacherFailure,
+    test_mapGroupHeaderIndexes_aliases,
+    test_mapGroupHeaderIndexes_missingRequiredEmail,
+    test_validateBatchGroupRow_invalidEmail,
+    test_normalizeGroupMemberRole_invalid,
+    test_getGroupBatchTemplate_csv_tsv,
+    test_buildGroupBatchCreateLogDetail_includesPreview,
+    test_buildGroupMemberAssignLogDetail_includesPreview,
     test_removeDriveFileWithCompatibility_prefersDelete,
     test_removeDriveFileWithCompatibility_usesRemoveFallback,
     test_removeDriveFileWithCompatibility_permissionFallbackToTrash
@@ -251,6 +258,79 @@ function test_buildBatchCreateLogDetail_includesPartialTeacherFailure() {
   assertTrue_(detail.indexOf("Partial details:") !== -1, "Log detail should include partial details section.");
   assertTrue_(detail.indexOf("row 3") !== -1, "Log detail should include failed row number.");
   assertTrue_(detail.indexOf("Permission denied") !== -1, "Log detail should include teacher assignment failure reason.");
+}
+
+function test_mapGroupHeaderIndexes_aliases() {
+  const map = mapGroupBatchHeaderIndexes_(["Group Email", "Display Name", "Desc"]);
+  assertEqual_(map.email, 0, "Alias map email");
+  assertEqual_(map.name, 1, "Alias map name");
+  assertEqual_(map.description, 2, "Alias map description");
+}
+
+function test_mapGroupHeaderIndexes_missingRequiredEmail() {
+  assertThrows_(
+    function() {
+      mapGroupBatchHeaderIndexes_(["name", "description"]);
+    },
+    "email",
+    "Missing required email header should fail."
+  );
+}
+
+function test_validateBatchGroupRow_invalidEmail() {
+  const result = validateBatchGroupRow_({
+    email: "bad-address",
+    name: "Math Team",
+    description: ""
+  });
+  assertFalse_(result.valid, "Group row should be invalid for malformed group email.");
+}
+
+function test_normalizeGroupMemberRole_invalid() {
+  assertEqual_(normalizeGroupMemberRole_("owner"), "OWNER", "Role normalization should uppercase valid roles.");
+  assertThrows_(
+    function() {
+      normalizeGroupMemberRole_("admin");
+    },
+    "Invalid group member role",
+    "Invalid role should throw."
+  );
+}
+
+function test_getGroupBatchTemplate_csv_tsv() {
+  const csv = getGroupBatchTemplate("csv");
+  const tsv = getGroupBatchTemplate("tsv");
+  assertTrue_(csv.filename.endsWith(".csv"), "CSV group template filename.");
+  assertTrue_(tsv.filename.endsWith(".tsv"), "TSV group template filename.");
+  assertTrue_(csv.content.indexOf("email") !== -1, "Group template should include email header.");
+  assertTrue_(tsv.content.indexOf("\t") !== -1, "TSV template should use tab delimiter.");
+}
+
+function test_buildGroupBatchCreateLogDetail_includesPreview() {
+  const detail = buildGroupBatchCreateLogDetail_({
+    jobId: "job-1",
+    summary: { totalRows: 3, attemptedRows: 2, created: 1, skipped: 1, errors: 1 },
+    errors: [{
+      rowNumber: 4,
+      message: "Entity already exists."
+    }]
+  });
+  assertTrue_(detail.indexOf("Job job-1") !== -1, "Group batch detail should include job ID.");
+  assertTrue_(detail.indexOf("row 4") !== -1, "Group batch detail should include error row.");
+}
+
+function test_buildGroupMemberAssignLogDetail_includesPreview() {
+  const detail = buildGroupMemberAssignLogDetail_({
+    jobId: "job-2",
+    summary: { totalAssignments: 4, targetGroups: 2, selectedMembers: 2, added: 3, skipped: 0, errors: 1 },
+    errors: [{
+      groupEmail: "teachers@example.edu",
+      memberEmail: "user@example.edu",
+      message: "Resource not found."
+    }]
+  });
+  assertTrue_(detail.indexOf("Job job-2") !== -1, "Assignment detail should include job ID.");
+  assertTrue_(detail.indexOf("teachers@example.edu") !== -1, "Assignment detail should include group email.");
 }
 
 function test_removeDriveFileWithCompatibility_prefersDelete() {

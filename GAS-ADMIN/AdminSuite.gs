@@ -1,15 +1,16 @@
 /**
  * Project: Domain Admin Suite
- * Version: 1.9.0
+ * Version: 2.0.0
  * Updated: 2026-02-18 (Timezone UTC+8)
- * Description: Comprehensive Admin System (Classroom, Directory, Drive, Email).
+ * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
- * 2. Directory: Inactive User Detection, Suspend, Move OU
- * 3. Lifecycle: Automated deletion of suspended accounts after 3 months
- * 4. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive with Trash fallback
- * 5. Email: Custom HTML notification sending with variable support ({name}, {email})
- * 6. Logging: Centralized logging to Spreadsheet (UTC+8)
+ * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
+ * 3. Directory: Inactive User Detection, Suspend, Move OU
+ * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
+ * 5. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive with Trash fallback
+ * 6. Email: Custom HTML notification sending with variable support ({name}, {email})
+ * 7. Logging: Centralized logging to Spreadsheet (UTC+8)
  * * * REQUIRED SCOPES:
  * @include https://www.googleapis.com/auth/script.scriptapp
  * @include https://www.googleapis.com/auth/script.external_request
@@ -17,18 +18,21 @@
  * @include https://www.googleapis.com/auth/classroom.courses
  * @include https://www.googleapis.com/auth/classroom.rosters
  * @include https://www.googleapis.com/auth/classroom.profile.emails
+ * @include https://www.googleapis.com/auth/admin.directory.group
+ * @include https://www.googleapis.com/auth/admin.directory.group.member
  * @include https://www.googleapis.com/auth/admin.directory.user
  * @include https://www.googleapis.com/auth/admin.directory.orgunit
  * @include https://www.googleapis.com/auth/drive
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "1.9.0";
+const APP_VERSION = "2.0.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
   SHEET_NAME_LOGS: "Classroom_Logs",
   SHEET_NAME_ACTIONS: "Action_Logs",
+  SHEET_NAME_GROUP_AUDIT: "Group_Audit_Logs",
   SHEET_NAME_EMAILS: "Email_Logs", // New Log Sheet for Feature 5
   PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
 };
@@ -65,6 +69,31 @@ const COURSE_BATCH_HEADER_ALIAS_LOOKUP = {
   details: "description"
 };
 
+const GROUP_BATCH_CONFIG = {
+  MAX_ROWS: 100,
+  TEMPLATE_HEADERS: ["email", "name", "description"]
+};
+
+const GROUP_BATCH_REQUIRED_FIELDS = ["email"];
+
+const GROUP_BATCH_HEADER_ALIAS_LOOKUP = {
+  email: "email",
+  groupemail: "email",
+  groupemailaddress: "email",
+  address: "email",
+  group: "email",
+  groupname: "name",
+  name: "name",
+  displayname: "name",
+  title: "name",
+  description: "description",
+  desc: "description",
+  details: "description",
+  note: "description"
+};
+
+const GROUP_MEMBER_ALLOWED_ROLES = ["MEMBER", "MANAGER", "OWNER"];
+
 /**
  * Serves the Web App UI.
  */
@@ -73,7 +102,7 @@ function doGet(e) {
   template.appVersion = APP_VERSION;
   
   return template.evaluate()
-    .setTitle('Domain Admin Suite v${APP_VERSION}')
+    .setTitle(`Domain Admin Suite v${APP_VERSION}`)
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
@@ -152,9 +181,9 @@ function createClassroomCourse(payload) {
     if (payload.teacherEmail && payload.teacherEmail !== "me") {
       try {
         Classroom.Courses.Teachers.create({ userId: payload.teacherEmail }, created.id);
-        teacherStatus = 'Teacher added: ${payload.teacherEmail}';
+        teacherStatus = `Teacher added: ${payload.teacherEmail}`;
       } catch (e) {
-        teacherStatus = 'Created, but failed to add teacher: ${e.message}';
+        teacherStatus = `Created, but failed to add teacher: ${e.message}`;
       }
     }
 
@@ -167,7 +196,7 @@ function createClassroomCourse(payload) {
       createdAt: new Date()
     }]);
     
-    logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", 'Name: ${created.name}, ${teacherStatus}');
+    logSystemAction_("CREATE_COURSE", created.id, "SUCCESS", `Name: ${created.name}, ${teacherStatus}`);
     
     return { 
       id: created.id, 
@@ -190,7 +219,7 @@ function listCourses() {
     const response = Classroom.Courses.list({ courseStates: ['ACTIVE'], pageSize: 50 });
     const courses = response.courses || [];
     
-    logSystemAction_("LIST_COURSES", "N/A", "SUCCESS", 'Retrieved ${courses.length} courses');
+    logSystemAction_("LIST_COURSES", "N/A", "SUCCESS", `Retrieved ${courses.length} courses`);
     return courses.map(c => ({ 
       id: c.id, 
       name: c.name, 
@@ -226,7 +255,7 @@ function deleteClassroomCourse(courseId) {
     }
     
     logSystemAction_("DELETE_COURSE", courseId, "SUCCESS", "Course deleted");
-    return 'Course ${courseId} deleted successfully.';
+    return `Course ${courseId} deleted successfully.`;
   } catch (e) {
     logSystemAction_("DELETE_COURSE", courseId, "FAILED", e.message);
     throw new Error("Delete Failed: " + e.message);
@@ -244,11 +273,11 @@ function addStudentsToCourse(courseId, studentEmails) {
     } catch (e) {
       let msg = e.message;
       if (msg.includes("ALREADY_EXISTS")) msg = "Already Enrolled";
-      results.errors.push('${email}: ${msg}');
+      results.errors.push(`${email}: ${msg}`);
     }
   });
-  logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", 'Success: ${results.success.length}, Errors: ${results.errors.length}');
-  return { message: 'Processed ${studentEmails.length} students.', details: results };
+  logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", `Success: ${results.success.length}, Errors: ${results.errors.length}`);
+  return { message: `Processed ${studentEmails.length} students.`, details: results };
 }
 
 /**
@@ -376,7 +405,7 @@ function getCourseBatchTemplate(format) {
     .join("\n");
 
   return {
-    filename: 'classroom-course-batch-template.${normalizedFormat}',
+    filename: `classroom-course-batch-template.${normalizedFormat}`,
     mimeType: mimeType,
     content: content
   };
@@ -391,7 +420,7 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   }
 
   const createOps = rows.map(row => ({
-    contentId: 'create-row-${row.rowNumber}',
+    contentId: `create-row-${row.rowNumber}`,
     method: "POST",
     path: "/v1/courses",
     body: {
@@ -440,9 +469,9 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   });
 
   const teacherOps = createdForTeacherPhase.map(item => ({
-    contentId: 'teacher-row-${item.rowNumber}',
+    contentId: `teacher-row-${item.rowNumber}`,
     method: "POST",
-    path: '/v1/courses/${encodeURIComponent(item.course.id)}/teachers',
+    path: `/v1/courses/${encodeURIComponent(item.course.id)}/teachers`,
     body: { userId: item.teacherEmail },
     meta: item
   }));
@@ -452,7 +481,7 @@ function runCourseBatchPhases_(rows, batchExecutor) {
     : {};
 
   createdForTeacherPhase.forEach(item => {
-    const teacherResult = teacherResultMap['teacher-row-${item.rowNumber}'];
+    const teacherResult = teacherResultMap[`teacher-row-${item.rowNumber}`];
     const teacherAssigned = Boolean(teacherResult && teacherResult.ok);
     const teacherError = teacherAssigned
       ? ""
@@ -496,17 +525,17 @@ function executeBatchOperations_(operations, fetchFn) {
 }
 
 function executeBatchChunk_(operations, fetchFn) {
-  const boundary = 'batch_${Utilities.getUuid().replace(/-/g, "")}';
+  const boundary = `batch_${Utilities.getUuid().replace(/-/g, "")}`;
   const payload = buildBatchMultipartRequest_(operations, boundary);
   const fetcher = fetchFn || UrlFetchApp.fetch;
 
   const response = fetcher(COURSE_BATCH_CONFIG.ENDPOINT, {
     method: "post",
-    contentType: 'multipart/mixed; boundary=${boundary}',
+    contentType: `multipart/mixed; boundary=${boundary}`,
     payload: payload,
     muteHttpExceptions: true,
     headers: {
-      Authorization: 'Bearer ${ScriptApp.getOAuthToken()}',
+      Authorization: `Bearer ${ScriptApp.getOAuthToken()}`,
       Accept: "multipart/mixed"
     }
   });
@@ -518,7 +547,7 @@ function executeBatchChunk_(operations, fetchFn) {
 
   if (statusCode >= 400 && String(contentType || "").indexOf("multipart/mixed") === -1) {
     const parsed = safeJsonParse_(responseText);
-    const message = extractApiErrorMessage_(parsed, responseText || 'HTTP ${statusCode}');
+    const message = extractApiErrorMessage_(parsed, responseText || `HTTP ${statusCode}`);
     return operations.map(op => ({
       contentId: op.contentId,
       ok: false,
@@ -537,7 +566,7 @@ function executeBatchChunk_(operations, fetchFn) {
       contentId: op.contentId,
       ok: false,
       statusCode: statusCode || 0,
-      message: 'Failed to parse batch response: ${e.message}',
+      message: `Failed to parse batch response: ${e.message}`,
       body: null,
       rawBody: responseText
     }));
@@ -573,11 +602,11 @@ function executeBatchChunk_(operations, fetchFn) {
 function buildBatchMultipartRequest_(operations, boundary) {
   const lines = [];
   operations.forEach(op => {
-    lines.push('--${boundary}');
+    lines.push(`--${boundary}`);
     lines.push("Content-Type: application/http");
-    lines.push('Content-ID: <${op.contentId}>');
+    lines.push(`Content-ID: <${op.contentId}>`);
     lines.push("");
-    lines.push('${op.method} ${op.path} HTTP/1.1');
+    lines.push(`${op.method} ${op.path} HTTP/1.1`);
     lines.push("Host: classroom.googleapis.com");
     lines.push("Content-Type: application/json; charset=UTF-8");
     lines.push("Accept: application/json");
@@ -585,7 +614,7 @@ function buildBatchMultipartRequest_(operations, boundary) {
     lines.push(JSON.stringify(op.body || {}));
     lines.push("");
   });
-  lines.push('--${boundary}--');
+  lines.push(`--${boundary}--`);
   return lines.join("\r\n");
 }
 
@@ -596,7 +625,7 @@ function parseBatchMultipartResponse_(responseText, contentType) {
   }
 
   const boundary = boundaryMatch[1];
-  const pieces = String(responseText || "").split('--${boundary}');
+  const pieces = String(responseText || "").split(`--${boundary}`);
   const parsedParts = [];
 
   pieces.forEach(piece => {
@@ -695,7 +724,7 @@ function mapCourseBatchHeaderIndexes_(headerRow) {
 
   const missing = COURSE_BATCH_REQUIRED_FIELDS.filter(field => map[field] === undefined);
   if (missing.length > 0) {
-    throw new Error('Missing required headers: ${missing.join(", ")}.');
+    throw new Error(`Missing required headers: ${missing.join(", ")}.`);
   }
   return map;
 }
@@ -721,14 +750,14 @@ function validateBatchCourseRow_(rowObj) {
   if (!rowObj.teacherEmail) {
     errors.push("Teacher email is required.");
   } else if (!isValidEmail_(rowObj.teacherEmail)) {
-    errors.push('Teacher email is invalid (${rowObj.teacherEmail}).');
+    errors.push(`Teacher email is invalid (${rowObj.teacherEmail}).`);
   }
   return { valid: errors.length === 0, errors: errors };
 }
 
 function assertBatchRowLimit_(nonEmptyRowCount) {
   if (nonEmptyRowCount > COURSE_BATCH_CONFIG.MAX_ROWS) {
-    throw new Error('Upload exceeds row limit (${COURSE_BATCH_CONFIG.MAX_ROWS}).');
+    throw new Error(`Upload exceeds row limit (${COURSE_BATCH_CONFIG.MAX_ROWS}).`);
   }
 }
 
@@ -757,7 +786,7 @@ function getActiveCourseKeySet_() {
 }
 
 function buildCourseKey_(name, section) {
-  return '${normalizeCourseKeyPart_(name)}::${normalizeCourseKeyPart_(section)}';
+  return `${normalizeCourseKeyPart_(name)}::${normalizeCourseKeyPart_(section)}`;
 }
 
 function normalizeCourseKeyPart_(value) {
@@ -809,7 +838,7 @@ function isValidEmail_(value) {
 function escapeDelimitedValue_(value, delimiter) {
   const text = String(value || "");
   if (text.indexOf('"') !== -1 || text.indexOf("\n") !== -1 || text.indexOf("\r") !== -1 || text.indexOf(delimiter) !== -1) {
-    return '"${text.replace(/"/g, '""')}"';
+    return '"' + text.replace(/"/g, '""') + '"';
   }
   return text;
 }
@@ -857,7 +886,7 @@ function extractApiErrorMessage_(body, fallback) {
 
 function buildBatchCreateLogDetail_(result) {
   const summary = result && result.summary ? result.summary : {};
-  const base = 'Rows: ${summary.totalRows || 0}, Created: ${summary.created || 0}, Partial: ${summary.partial || 0}, Skipped: ${summary.skipped || 0}, Errors: ${summary.errors || 0}';
+  const base = `Rows: ${summary.totalRows || 0}, Created: ${summary.created || 0}, Partial: ${summary.partial || 0}, Skipped: ${summary.skipped || 0}, Errors: ${summary.errors || 0}`;
   const partialRows = (result && result.created ? result.created : []).filter(item => item.teacherStatus === "FAILED");
   if (partialRows.length === 0) {
     return base;
@@ -865,11 +894,11 @@ function buildBatchCreateLogDetail_(result) {
 
   const details = partialRows.slice(0, 10).map(item => {
     const reason = item.teacherError || "Unknown teacher assignment error";
-    return 'row ${item.rowNumber} (courseId=${item.courseId}, teacher=${item.teacherEmail}): ${reason}';
+    return `row ${item.rowNumber} (courseId=${item.courseId}, teacher=${item.teacherEmail}): ${reason}`;
   }).join(" | ");
 
-  const extraCount = partialRows.length > 10 ? ' (+${partialRows.length - 10} more)' : "";
-  return truncateLogDetail_('${base}; Partial details: ${details}${extraCount}', 3500);
+  const extraCount = partialRows.length > 10 ? ` (+${partialRows.length - 10} more)` : "";
+  return truncateLogDetail_(`${base}; Partial details: ${details}${extraCount}`, 3500);
 }
 
 function truncateLogDetail_(text, maxLength) {
@@ -880,7 +909,640 @@ function truncateLogDetail_(text, maxLength) {
 }
 
 /* =========================================
-   FEATURE 2: USER MANAGEMENT (Admin SDK)
+   FEATURE 2: GROUP & MEMBER MANAGEMENT (Admin SDK Directory API)
+   ========================================= */
+
+/**
+ * Lists all Google Workspace groups in the current customer.
+ * Directory API requires either customer or domain in list requests.
+ */
+function getWorkspaceGroups() {
+  try {
+    const groups = [];
+    let pageToken = null;
+
+    do {
+      const response = AdminDirectory.Groups.list({
+        customer: "my_customer",
+        maxResults: 200,
+        pageToken: pageToken
+      });
+
+      (response.groups || []).forEach(group => {
+        groups.push({
+          id: group.id || "",
+          email: normalizeGroupEmail_(group.email),
+          name: group.name || "",
+          description: group.description || "",
+          directMembersCount: Number(group.directMembersCount || 0)
+        });
+      });
+
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    groups.sort(function(a, b) {
+      return a.email.localeCompare(b.email);
+    });
+
+    return groups;
+  } catch (e) {
+    logSystemAction_("LIST_GROUPS", "my_customer", "FAILED", extractErrorReasonFromException_(e));
+    throw new Error("Failed to list groups: " + extractErrorReasonFromException_(e));
+  }
+}
+
+/**
+ * Returns a sample CSV/TSV template for bulk Google Group creation.
+ */
+function getGroupBatchTemplate(format) {
+  const normalizedFormat = String(format || "csv").toLowerCase() === "tsv" ? "tsv" : "csv";
+  const delimiter = normalizedFormat === "tsv" ? "\t" : ",";
+  const mimeType = normalizedFormat === "tsv" ? "text/tab-separated-values" : "text/csv";
+
+  const templateRows = [
+    GROUP_BATCH_CONFIG.TEMPLATE_HEADERS,
+    ["teachers-math@example.edu", "Math Teachers", "Teachers for Math Department"],
+    ["grade6-homeroom@example.edu", "Grade 6 Homeroom", "Homeroom communication group for grade 6"]
+  ];
+
+  const content = templateRows
+    .map(row => row.map(cell => escapeDelimitedValue_(cell, delimiter)).join(delimiter))
+    .join("\n");
+
+  return {
+    filename: "workspace-group-batch-template." + normalizedFormat,
+    mimeType: mimeType,
+    content: content
+  };
+}
+
+/**
+ * Creates Google Workspace groups in bulk from CSV/TSV uploads.
+ */
+function processBatchGroupUpload(fileName, fileContent) {
+  const jobId = Utilities.getUuid();
+  const auditLogs = [];
+
+  try {
+    if (!fileContent || !String(fileContent).trim()) {
+      throw new Error("Upload file is empty.");
+    }
+
+    const delimiter = detectBatchDelimiter_(fileName, fileContent);
+    const rows = parseDelimitedRows_(fileContent, delimiter);
+    if (rows.length < 2) {
+      throw new Error("File must include headers and at least one data row.");
+    }
+
+    const headerMap = mapGroupBatchHeaderIndexes_(rows[0]);
+    const existingGroupEmails = getExistingGroupEmailSet_();
+    const seenUploadEmails = new Set();
+    const skipped = [];
+    const candidates = [];
+    const errors = [];
+    const created = [];
+    let nonEmptyRowCount = 0;
+
+    for (let i = 1; i < rows.length; i++) {
+      const rowNumber = i + 1;
+      const rowObj = normalizeBatchGroupRow_(rows[i], headerMap);
+      if (isBatchGroupRowEmpty_(rowObj)) continue;
+
+      nonEmptyRowCount++;
+      const validation = validateBatchGroupRow_(rowObj);
+      if (!validation.valid) {
+        const reason = validation.errors.join(" ");
+        skipped.push({ rowNumber: rowNumber, reason: reason });
+        auditLogs.push({
+          jobId: jobId,
+          action: "BATCH_CREATE_GROUPS",
+          stage: "VALIDATE_ROW",
+          rowNumber: rowNumber,
+          groupEmail: rowObj.email,
+          memberEmail: "",
+          role: "",
+          status: "SKIPPED",
+          statusCode: 0,
+          message: reason,
+          meta: { sourceFile: fileName || "upload" }
+        });
+        continue;
+      }
+
+      const normalizedEmail = normalizeGroupEmail_(rowObj.email);
+      if (existingGroupEmails.has(normalizedEmail)) {
+        const reason = "Skipped duplicate existing group email.";
+        skipped.push({ rowNumber: rowNumber, reason: reason });
+        auditLogs.push({
+          jobId: jobId,
+          action: "BATCH_CREATE_GROUPS",
+          stage: "DEDUPE_EXISTING",
+          rowNumber: rowNumber,
+          groupEmail: normalizedEmail,
+          memberEmail: "",
+          role: "",
+          status: "SKIPPED",
+          statusCode: 0,
+          message: reason,
+          meta: { sourceFile: fileName || "upload" }
+        });
+        continue;
+      }
+
+      if (seenUploadEmails.has(normalizedEmail)) {
+        const reason = "Skipped duplicate group email in upload file.";
+        skipped.push({ rowNumber: rowNumber, reason: reason });
+        auditLogs.push({
+          jobId: jobId,
+          action: "BATCH_CREATE_GROUPS",
+          stage: "DEDUPE_UPLOAD",
+          rowNumber: rowNumber,
+          groupEmail: normalizedEmail,
+          memberEmail: "",
+          role: "",
+          status: "SKIPPED",
+          statusCode: 0,
+          message: reason,
+          meta: { sourceFile: fileName || "upload" }
+        });
+        continue;
+      }
+
+      seenUploadEmails.add(normalizedEmail);
+      candidates.push({
+        rowNumber: rowNumber,
+        email: normalizedEmail,
+        name: rowObj.name,
+        description: rowObj.description
+      });
+    }
+
+    assertGroupBatchRowLimit_(nonEmptyRowCount);
+    if (nonEmptyRowCount === 0) {
+      throw new Error("No non-empty rows found in upload file.");
+    }
+
+    candidates.forEach(candidate => {
+      const payload = { email: candidate.email };
+      if (candidate.name) payload.name = candidate.name;
+      if (candidate.description) payload.description = candidate.description;
+
+      try {
+        const response = AdminDirectory.Groups.insert(payload);
+        created.push({
+          rowNumber: candidate.rowNumber,
+          groupId: response.id || "",
+          email: normalizeGroupEmail_(response.email || candidate.email),
+          name: response.name || candidate.name || "",
+          description: response.description || candidate.description || ""
+        });
+        existingGroupEmails.add(candidate.email);
+
+        auditLogs.push({
+          jobId: jobId,
+          action: "BATCH_CREATE_GROUPS",
+          stage: "CREATE_GROUP",
+          rowNumber: candidate.rowNumber,
+          groupEmail: candidate.email,
+          memberEmail: "",
+          role: "",
+          status: "SUCCESS",
+          statusCode: 200,
+          message: "Group created.",
+          meta: {
+            sourceFile: fileName || "upload",
+            groupId: response.id || "",
+            groupName: response.name || candidate.name || ""
+          }
+        });
+      } catch (e) {
+        const message = extractErrorReasonFromException_(e);
+        const statusCode = parseStatusCodeFromError_(e);
+        errors.push({
+          rowNumber: candidate.rowNumber,
+          stage: "CREATE_GROUP",
+          statusCode: statusCode,
+          message: message
+        });
+
+        auditLogs.push({
+          jobId: jobId,
+          action: "BATCH_CREATE_GROUPS",
+          stage: "CREATE_GROUP",
+          rowNumber: candidate.rowNumber,
+          groupEmail: candidate.email,
+          memberEmail: "",
+          role: "",
+          status: "FAILED",
+          statusCode: statusCode,
+          message: message,
+          meta: { sourceFile: fileName || "upload", payload: payload }
+        });
+      }
+    });
+
+    appendGroupAuditLogs_(auditLogs);
+
+    const result = {
+      jobId: jobId,
+      fileName: fileName || "upload",
+      delimiter: delimiter === "\t" ? "TSV" : "CSV",
+      rowLimit: GROUP_BATCH_CONFIG.MAX_ROWS,
+      summary: {
+        totalRows: nonEmptyRowCount,
+        attemptedRows: candidates.length,
+        created: created.length,
+        skipped: skipped.length,
+        errors: errors.length
+      },
+      created: created,
+      skipped: skipped,
+      errors: errors
+    };
+
+    const status = errors.length === 0 ? "SUCCESS" : (created.length > 0 ? "PARTIAL" : "FAILED");
+    logSystemAction_("BATCH_CREATE_GROUPS", result.fileName, status, buildGroupBatchCreateLogDetail_(result));
+
+    return result;
+  } catch (e) {
+    logSystemAction_(
+      "BATCH_CREATE_GROUPS",
+      fileName || "upload",
+      "FAILED",
+      truncateLogDetail_("Job " + jobId + ": " + extractErrorReasonFromException_(e), 3500)
+    );
+    throw e;
+  }
+}
+
+/**
+ * Adds selected users to one or many groups with role control.
+ * Role values follow Directory API docs: MEMBER, MANAGER, OWNER.
+ */
+function assignMembersToGroups(payload) {
+  const request = payload || {};
+  const jobId = Utilities.getUuid();
+  const auditLogs = [];
+
+  try {
+    const groupEmails = Array.from(new Set((request.groupEmails || [])
+      .map(normalizeGroupEmail_)
+      .filter(Boolean)));
+    const memberEmails = Array.from(new Set((request.memberEmails || [])
+      .map(email => String(email || "").trim().toLowerCase())
+      .filter(Boolean)));
+    const sourceOu = String(request.sourceOu || "");
+    const role = normalizeGroupMemberRole_(request.role || "MEMBER");
+
+    if (groupEmails.length === 0) {
+      throw new Error("At least one target group must be selected.");
+    }
+    if (memberEmails.length === 0) {
+      throw new Error("At least one user account must be selected.");
+    }
+
+    const added = [];
+    const skipped = [];
+    const errors = [];
+
+    groupEmails.forEach(groupEmail => {
+      memberEmails.forEach(memberEmail => {
+        const outcome = runGroupMemberInsertWithRetry_(groupEmail, memberEmail, role);
+        const baseMeta = {
+          sourceOu: sourceOu || "",
+          retryAttempts: outcome.attempts
+        };
+
+        if (outcome.status === "ADDED") {
+          added.push({
+            groupEmail: groupEmail,
+            memberEmail: memberEmail,
+            role: role
+          });
+        } else if (outcome.status === "SKIPPED") {
+          skipped.push({
+            groupEmail: groupEmail,
+            memberEmail: memberEmail,
+            role: role,
+            reason: outcome.message
+          });
+        } else {
+          errors.push({
+            groupEmail: groupEmail,
+            memberEmail: memberEmail,
+            role: role,
+            statusCode: outcome.statusCode,
+            message: outcome.message
+          });
+        }
+
+        auditLogs.push({
+          jobId: jobId,
+          action: "ASSIGN_GROUP_MEMBERS",
+          stage: "ADD_MEMBER",
+          rowNumber: "",
+          groupEmail: groupEmail,
+          memberEmail: memberEmail,
+          role: role,
+          status: outcome.status === "ADDED" ? "SUCCESS" : outcome.status,
+          statusCode: outcome.statusCode,
+          message: outcome.message,
+          meta: baseMeta
+        });
+      });
+    });
+
+    appendGroupAuditLogs_(auditLogs);
+
+    const result = {
+      jobId: jobId,
+      sourceOu: sourceOu || "",
+      role: role,
+      summary: {
+        totalAssignments: groupEmails.length * memberEmails.length,
+        targetGroups: groupEmails.length,
+        selectedMembers: memberEmails.length,
+        added: added.length,
+        skipped: skipped.length,
+        errors: errors.length
+      },
+      added: added,
+      skipped: skipped,
+      errors: errors
+    };
+
+    const status = errors.length === 0 ? "SUCCESS" : (added.length > 0 || skipped.length > 0 ? "PARTIAL" : "FAILED");
+    const logTarget = sourceOu ? sourceOu : "manual-selection";
+    logSystemAction_("ASSIGN_GROUP_MEMBERS", logTarget, status, buildGroupMemberAssignLogDetail_(result));
+    return result;
+  } catch (e) {
+    logSystemAction_(
+      "ASSIGN_GROUP_MEMBERS",
+      String(request.sourceOu || "manual-selection"),
+      "FAILED",
+      truncateLogDetail_("Job " + jobId + ": " + extractErrorReasonFromException_(e), 3500)
+    );
+    throw e;
+  }
+}
+
+function runGroupMemberInsertWithRetry_(groupEmail, memberEmail, role) {
+  const maxAttempts = 3;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      AdminDirectory.Members.insert({ email: memberEmail, role: role }, groupEmail);
+      return {
+        status: "ADDED",
+        statusCode: 200,
+        message: "Member added.",
+        attempts: attempt
+      };
+    } catch (e) {
+      const message = extractErrorReasonFromException_(e);
+      const statusCode = parseStatusCodeFromError_(e);
+
+      if (isMemberAlreadyExistsError_(message)) {
+        return {
+          status: "SKIPPED",
+          statusCode: statusCode || 409,
+          message: "Member already exists in group.",
+          attempts: attempt
+        };
+      }
+
+      if (isTransientGroupPropagationError_(message) && attempt < maxAttempts) {
+        Utilities.sleep(3000 * attempt);
+        continue;
+      }
+
+      const finalMessage = isTransientGroupPropagationError_(message)
+        ? truncateLogDetail_(message + " Group may still be propagating. Wait at least 1 minute and retry.", 500)
+        : message;
+
+      return {
+        status: "FAILED",
+        statusCode: statusCode,
+        message: finalMessage,
+        attempts: attempt
+      };
+    }
+  }
+
+  return {
+    status: "FAILED",
+    statusCode: 0,
+    message: "Unexpected member insert retry termination.",
+    attempts: maxAttempts
+  };
+}
+
+function mapGroupBatchHeaderIndexes_(headerRow) {
+  const map = {};
+  (headerRow || []).forEach((header, index) => {
+    const normalized = normalizeHeader_(header);
+    const canonicalField = GROUP_BATCH_HEADER_ALIAS_LOOKUP[normalized];
+    if (canonicalField && map[canonicalField] === undefined) {
+      map[canonicalField] = index;
+    }
+  });
+
+  const missing = GROUP_BATCH_REQUIRED_FIELDS.filter(field => map[field] === undefined);
+  if (missing.length > 0) {
+    throw new Error("Missing required headers: " + missing.join(", ") + ".");
+  }
+  return map;
+}
+
+function normalizeBatchGroupRow_(rawRow, headerMap) {
+  return {
+    email: normalizeGroupEmail_(getRowValue_(rawRow, headerMap.email)),
+    name: getRowValue_(rawRow, headerMap.name),
+    description: getRowValue_(rawRow, headerMap.description)
+  };
+}
+
+function isBatchGroupRowEmpty_(rowObj) {
+  return !rowObj.email && !rowObj.name && !rowObj.description;
+}
+
+function validateBatchGroupRow_(rowObj) {
+  const errors = [];
+  if (!rowObj.email) {
+    errors.push("Group email is required.");
+  } else if (!isValidEmail_(rowObj.email)) {
+    errors.push("Group email is invalid (" + rowObj.email + ").");
+  }
+  return { valid: errors.length === 0, errors: errors };
+}
+
+function assertGroupBatchRowLimit_(nonEmptyRowCount) {
+  if (nonEmptyRowCount > GROUP_BATCH_CONFIG.MAX_ROWS) {
+    throw new Error("Upload exceeds row limit (" + GROUP_BATCH_CONFIG.MAX_ROWS + ").");
+  }
+}
+
+function getExistingGroupEmailSet_() {
+  const set = new Set();
+  getWorkspaceGroups().forEach(group => {
+    const email = normalizeGroupEmail_(group.email);
+    if (email) set.add(email);
+  });
+  return set;
+}
+
+function normalizeGroupEmail_(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeGroupMemberRole_(role) {
+  const normalized = String(role || "MEMBER").trim().toUpperCase();
+  if (GROUP_MEMBER_ALLOWED_ROLES.indexOf(normalized) === -1) {
+    throw new Error("Invalid group member role: " + normalized + ". Allowed: " + GROUP_MEMBER_ALLOWED_ROLES.join(", "));
+  }
+  return normalized;
+}
+
+function isMemberAlreadyExistsError_(message) {
+  const text = String(message || "").toLowerCase();
+  return text.indexOf("member already exists") !== -1 ||
+    text.indexOf("duplicate") !== -1 ||
+    text.indexOf("already a member") !== -1 ||
+    text.indexOf("conflict") !== -1;
+}
+
+function isTransientGroupPropagationError_(message) {
+  const text = String(message || "").toLowerCase();
+  return text.indexOf("resource not found") !== -1 ||
+    text.indexOf("not found") !== -1 ||
+    text.indexOf("group does not exist") !== -1;
+}
+
+function parseStatusCodeFromError_(error) {
+  const text = getExceptionMessage_(error);
+  const match = /\b([45]\d{2})\b/.exec(text);
+  return match ? Number(match[1]) : 0;
+}
+
+function extractErrorReasonFromException_(error) {
+  const text = getExceptionMessage_(error);
+  const parsed = safeJsonParse_(text);
+  const parsedMessage = extractApiErrorMessage_(parsed, "");
+  if (parsedMessage) return parsedMessage;
+
+  const marker = "with error:";
+  const markerIndex = text.toLowerCase().indexOf(marker);
+  if (markerIndex !== -1) {
+    return text.substring(markerIndex + marker.length).trim();
+  }
+  return text;
+}
+
+function buildGroupBatchCreateLogDetail_(result) {
+  const summary = result && result.summary ? result.summary : {};
+  const jobId = result && result.jobId ? result.jobId : "N/A";
+  const base = "Job " + jobId +
+    " | Rows: " + (summary.totalRows || 0) +
+    ", Attempted: " + (summary.attemptedRows || 0) +
+    ", Created: " + (summary.created || 0) +
+    ", Skipped: " + (summary.skipped || 0) +
+    ", Errors: " + (summary.errors || 0);
+
+  if (!result || !result.errors || result.errors.length === 0) return base;
+
+  const preview = result.errors.slice(0, 5).map(item => {
+    return "row " + item.rowNumber + ": " + item.message;
+  }).join(" | ");
+  const extra = result.errors.length > 5 ? " (+" + (result.errors.length - 5) + " more)" : "";
+  return truncateLogDetail_(base + "; Error preview: " + preview + extra, 3500);
+}
+
+function buildGroupMemberAssignLogDetail_(result) {
+  const summary = result && result.summary ? result.summary : {};
+  const jobId = result && result.jobId ? result.jobId : "N/A";
+  const base = "Job " + jobId +
+    " | Groups: " + (summary.targetGroups || 0) +
+    ", Members: " + (summary.selectedMembers || 0) +
+    ", Total assignments: " + (summary.totalAssignments || 0) +
+    ", Added: " + (summary.added || 0) +
+    ", Skipped: " + (summary.skipped || 0) +
+    ", Errors: " + (summary.errors || 0);
+
+  if (!result || !result.errors || result.errors.length === 0) return base;
+
+  const preview = result.errors.slice(0, 5).map(item => {
+    return item.groupEmail + " <- " + item.memberEmail + ": " + item.message;
+  }).join(" | ");
+  const extra = result.errors.length > 5 ? " (+" + (result.errors.length - 5) + " more)" : "";
+  return truncateLogDetail_(base + "; Error preview: " + preview + extra, 3500);
+}
+
+function ensureGroupAuditSheet_() {
+  const ss = getDBSpreadsheet_();
+  let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_GROUP_AUDIT);
+  if (!sheet) {
+    sheet = ss.insertSheet(CONFIG.SHEET_NAME_GROUP_AUDIT);
+    sheet.appendRow([
+      "Timestamp (UTC+8)",
+      "Job ID",
+      "Action",
+      "Stage",
+      "Row Number",
+      "Group Email",
+      "Member Email",
+      "Role",
+      "Status",
+      "Status Code",
+      "Message",
+      "Meta",
+      "Version"
+    ]);
+    sheet.setFrozenRows(1);
+  }
+  return sheet;
+}
+
+function appendGroupAuditLogs_(logs) {
+  if (!logs || logs.length === 0) return;
+
+  const sheet = ensureGroupAuditSheet_();
+  const values = logs.map(log => {
+    return [
+      log.timestamp || Utilities.formatDate(new Date(), CONFIG.TIME_ZONE, "yyyy-MM-dd HH:mm:ss"),
+      log.jobId || "",
+      log.action || "",
+      log.stage || "",
+      log.rowNumber || "",
+      log.groupEmail || "",
+      log.memberEmail || "",
+      log.role || "",
+      log.status || "",
+      log.statusCode || "",
+      truncateLogDetail_(log.message || "", 1000),
+      truncateLogDetail_(safeStringify_(log.meta), 1000),
+      APP_VERSION
+    ];
+  });
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, values.length, values[0].length).setValues(values);
+
+  if (sheet.getLastRow() > 5000) {
+    sheet.deleteRows(2, sheet.getLastRow() - 5000);
+  }
+}
+
+function safeStringify_(value) {
+  if (value === undefined || value === null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch (e) {
+    return String(value);
+  }
+}
+
+/* =========================================
+   FEATURE 3: USER MANAGEMENT (Admin SDK)
    ========================================= */
 
 function getDomainOUs() {
@@ -903,7 +1565,7 @@ function getFilteredUsers(ouPath, dateCondition, specificDate) {
   try {
     do {
       let queryParts = [];
-      if (ouPath && ouPath !== "ALL") queryParts.push('orgUnitPath='${ouPath}'');
+      if (ouPath && ouPath !== "ALL") queryParts.push("orgUnitPath='" + ouPath + "'");
       const queryString = queryParts.join(" ");
 
       const options = {
@@ -962,7 +1624,7 @@ function moveUsersToOU(emails, targetOU) {
 }
 
 /* =========================================
-   FEATURE 3: LIFECYCLE AUTOMATION
+   FEATURE 4: LIFECYCLE AUTOMATION
    ========================================= */
 
 function installTrigger() {
@@ -1051,7 +1713,7 @@ function checkDeletionQueue() {
 }
 
 /* =========================================
-   FEATURE 4: DRIVE AUDIT (Drive API v3)
+   FEATURE 5: DRIVE AUDIT (Drive API v3)
    ========================================= */
 
 /**
@@ -1064,7 +1726,7 @@ function findOutdatedFiles(dateString) {
     // 1. Filter Condition: Date Cutoff (One condition)
     if (!dateString) throw new Error("Date string is required (YYYY-MM-DD).");
     const cutoff = '${dateString}T00:00:00Z';
-    const query = 'modifiedTime < '${cutoff}' and trashed = false';
+    const query = "modifiedTime < '" + cutoff + "' and trashed = false";
     
     // 2. Fixed Sort Logic: Largest First, then Oldest
     const orderBy = "quotaBytesUsed desc, modifiedTime"; 
@@ -1284,7 +1946,7 @@ function getExceptionMessage_(err) {
 }
 
 /* =========================================
-   FEATURE 5: EMAIL NOTIFICATION (Gmail API)
+   FEATURE 6: EMAIL NOTIFICATION (Gmail API)
    ========================================= */
 
 /**
