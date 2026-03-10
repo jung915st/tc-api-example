@@ -273,8 +273,8 @@
                 </div>
 
                 <!-- Action -->
-                <button class="btn btn-primary w-100 py-2" onclick="enrollCheckedStudents()">
-                  <i class="bi bi-person-plus"></i> Enroll Selected Students
+                <button class="btn btn-primary w-100 py-2" onclick="submitEnrollmentChanges()">
+                  <i class="bi bi-person-check"></i> Apply Enrollment Changes
                 </button>
 
               </div>
@@ -658,6 +658,7 @@
   <script>
     // --- GLOBAL UTILS ---
     let enrolledEmailsCache_ = null; // null = not yet fetched; Set = ready
+    let loadedOuEmails_ = null;      // Set of emails rendered in the current OU load
 
     window.onload = function() {
       // Init Drive Date to 1 year ago by default
@@ -743,6 +744,7 @@
 
     function loadCourses() {
       enrolledEmailsCache_ = null;
+      loadedOuEmails_ = null;
       const tbody = document.getElementById('courseTableBody');
       const enrollSelect = document.getElementById('enrollCourseSelect');
       
@@ -781,6 +783,7 @@
     function onCourseSelectChange() {
       const courseId = document.getElementById('enrollCourseSelect').value;
       enrolledEmailsCache_ = null;
+      loadedOuEmails_ = null;
       if (!courseId) return;
       google.script.run
         .withSuccessHandler(emails => {
@@ -1055,7 +1058,8 @@
       const ou = selectEl.value;
 
       if (!ou) return alert("Please select an OU first.");
-      
+      if (containerId === 'studentCheckList') loadedOuEmails_ = null;
+
       setLoader(true, `Loading users from ${ou}...`);
       google.script.run.withSuccessHandler(users => {
         setLoader(false);
@@ -1093,27 +1097,47 @@
             </div>
           `;
         });
+
+        if (isClassroomEnroll) {
+          loadedOuEmails_ = new Set(users.map(u => u.email.toLowerCase()));
+        }
       }).withFailureHandler(err => {
         setLoader(false);
         alert(err.message);
       }).getFilteredUsers(ou, "ALL", null);
     }
 
-    function enrollCheckedStudents() {
+    function submitEnrollmentChanges() {
       const courseId = document.getElementById('enrollCourseSelect').value;
-      const emails = getCheckedValues('.student-check');
-      
       if (!courseId) return alert("Please select a target course.");
-      if (emails.length === 0) return alert("Please check at least one student.");
-      
-      setLoader(true, `Enrolling ${emails.length} students...`);
+      if (!(loadedOuEmails_ instanceof Set)) return alert("Please load students from an OU first.");
+
+      const checkedEmails = new Set(getCheckedValues('.student-check').map(e => e.toLowerCase()));
+
+      const toEnroll = [...checkedEmails].filter(e =>
+        !(enrolledEmailsCache_ instanceof Set && enrolledEmailsCache_.has(e))
+      );
+      const toRemove = [...loadedOuEmails_].filter(e =>
+        enrolledEmailsCache_ instanceof Set && enrolledEmailsCache_.has(e) && !checkedEmails.has(e)
+      );
+
+      if (toEnroll.length === 0 && toRemove.length === 0) {
+        return alert("No changes to apply.");
+      }
+
+      setLoader(true, `Applying changes (${toEnroll.length} enroll, ${toRemove.length} remove)...`);
       google.script.run.withSuccessHandler(res => {
         setLoader(false);
         alert(res.message);
+        // Update local cache to reflect new state
+        if (enrolledEmailsCache_ instanceof Set) {
+          toEnroll.forEach(e => enrolledEmailsCache_.add(e));
+          toRemove.forEach(e => enrolledEmailsCache_.delete(e));
+        }
       }).withFailureHandler(err => {
         setLoader(false);
-        alert("Enrollment Error: " + err.message);
-      }).addStudentsToCourse(courseId, emails);
+        alert("Error: " + err.message);
+      }).applyEnrollmentChanges(courseId, toEnroll, toRemove);
     }
 
     // --- GROUP & MEMBER MANAGEMENT FUNCTIONS ---

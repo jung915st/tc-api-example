@@ -1,6 +1,6 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.2.0
+ * Version: 2.2.1
  * Updated: 2026-03-10 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.2.0";
+const APP_VERSION = "2.2.1";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -416,6 +416,44 @@ function getEnrolledStudentEmails(courseId) {
   } catch (e) {
     return [];
   }
+}
+
+function applyEnrollmentChanges(courseId, toEnroll, toRemove) {
+  if (!courseId) return { message: "No course specified." };
+  const enrolled = { success: [], errors: [] };
+  const removed  = { success: [], errors: [] };
+
+  (toEnroll || []).forEach(email => {
+    try {
+      Classroom.Courses.Students.create({ userId: email }, courseId);
+      enrolled.success.push(email);
+    } catch (e) {
+      let msg = e.message;
+      if (msg.includes("ALREADY_EXISTS")) msg = "Already Enrolled";
+      enrolled.errors.push(`${email}: ${msg}`);
+    }
+  });
+
+  (toRemove || []).forEach(email => {
+    try {
+      Classroom.Courses.Students.remove(courseId, email);
+      removed.success.push(email);
+    } catch (e) {
+      let msg = e.message;
+      if (msg.includes("NOT_FOUND")) msg = "Not Enrolled";
+      removed.errors.push(`${email}: ${msg}`);
+    }
+  });
+
+  logSystemAction_("APPLY_ENROLLMENT", courseId, "COMPLETE",
+    `Enrolled: ${enrolled.success.length}, Removed: ${removed.success.length}, Errors: ${enrolled.errors.length + removed.errors.length}`);
+  return {
+    message: `Enrolled: ${enrolled.success.length}, Removed: ${removed.success.length}` +
+      (enrolled.errors.length + removed.errors.length > 0
+        ? ` (${enrolled.errors.length + removed.errors.length} error(s))` : ''),
+    enrolled,
+    removed
+  };
 }
 
 /**

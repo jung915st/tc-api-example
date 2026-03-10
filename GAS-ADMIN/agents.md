@@ -1,6 +1,6 @@
 # GAS-ADMIN — Agent Development Guide
 
-> **Version:** 2.2.0 | **Last Updated:** 2026-03-10
+> **Version:** 2.2.1 | **Last Updated:** 2026-03-10
 > **Stack:** Google Apps Script (V8), Bootstrap 5, Google Workspace APIs
 
 ---
@@ -126,7 +126,7 @@ function listCourses() { ... }
 function getDBSpreadsheet_() { ... }
 
 // Constants
-const APP_VERSION = '2.2.0';
+const APP_VERSION = '2.2.1';
 const CONFIG = { ... };
 ```
 
@@ -272,6 +272,7 @@ No CI/CD. Deploy manually via:
 
 | Version | Type | Notable Change |
 |---|---|---|
+| 2.2.1 | patch | Classroom: enroll/disenroll toggle — uncheck removes student from course; applyEnrollmentChanges replaces enrollCheckedStudents; loadedOuEmails_ tracks rendered list |
 | 2.2.0 | minor | Classroom: enroll students pre-check — auto fetch course roster on course select, pre-check enrolled students with 已加入 badge on OU load |
 | 2.1.0 | minor | Classroom: bulk archive active courses, bulk delete active/archived courses, archived course list UI |
 | 2.0.0 | major | Group management module: batch group creation, multi-group member assignment |
