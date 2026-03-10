@@ -202,24 +202,34 @@
             <div class="card">
               <div class="card-header bg-white d-flex justify-content-between align-items-center">
                 <span>Active Courses</span>
-                <button class="btn btn-sm btn-outline-secondary" onclick="loadCourses()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                <div class="d-flex gap-2">
+                  <button class="btn btn-sm btn-outline-warning" id="archiveSelectedBtn" onclick="archiveSelectedCourses()" disabled>
+                    <i class="bi bi-archive"></i> Archive Selected (<span id="archiveCount">0</span>)
+                  </button>
+                  <button class="btn btn-sm btn-outline-danger" id="deleteSelectedActiveBtn" onclick="deleteSelectedActiveCourses()" disabled>
+                    <i class="bi bi-trash"></i> Delete Selected (<span id="deleteActiveCount">0</span>)
+                  </button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="loadCourses()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                </div>
               </div>
               <div class="card-body p-0 table-scroll">
                 <table class="table table-hover mb-0 align-middle">
                   <thead class="table-light sticky-top">
                     <tr>
+                      <th width="40"><input type="checkbox" class="form-check-input" onchange="toggleAll(this, '.course-check'); updateArchiveCount_()"></th>
                       <th>Name</th>
                       <th>Section</th>
                       <th>Enroll Code</th>
                       <th class="text-end">Action</th>
                     </tr>
                   </thead>
-                  <tbody id="courseTableBody">
-                    <tr><td colspan="4" class="text-center text-muted py-3">Loading courses...</td></tr>
+                  <tbody id="courseTableBody" onchange="updateArchiveCount_()">
+                    <tr><td colspan="5" class="text-center text-muted py-3">Loading courses...</td></tr>
                   </tbody>
                 </table>
               </div>
             </div>
+            <div id="archiveResultBox" class="mt-2 small"></div>
           </div>
 
           <!-- Right Column: Enroll Students -->
@@ -272,6 +282,40 @@
           </div>
 
         </div>
+
+        <!-- Archived Courses Card (full-width) -->
+        <div class="row mt-3">
+          <div class="col-12">
+            <div class="card">
+              <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-archive text-secondary me-1"></i> Archived Courses</span>
+                <div class="d-flex gap-2">
+                  <button class="btn btn-sm btn-outline-danger" id="deleteSelectedArchivedBtn" onclick="deleteSelectedArchivedCourses()" disabled>
+                    <i class="bi bi-trash"></i> Delete Selected (<span id="deleteArchivedCount">0</span>)
+                  </button>
+                  <button class="btn btn-sm btn-outline-secondary" onclick="loadArchivedCourses()"><i class="bi bi-arrow-clockwise"></i> Refresh</button>
+                </div>
+              </div>
+              <div class="card-body p-0 table-scroll">
+                <table class="table table-hover mb-0 align-middle">
+                  <thead class="table-light sticky-top">
+                    <tr>
+                      <th width="40"><input type="checkbox" class="form-check-input" onchange="toggleAll(this, '.archived-check'); updateArchivedDeleteCount_()"></th>
+                      <th>Name</th>
+                      <th>Section</th>
+                      <th>Owner ID</th>
+                    </tr>
+                  </thead>
+                  <tbody id="archivedCourseTableBody" onchange="updateArchivedDeleteCount_()">
+                    <tr><td colspan="4" class="text-center text-muted py-3">Click Refresh to load archived courses.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div id="deleteArchivedResultBox" class="mt-2 small"></div>
+          </div>
+        </div>
+
       </div>
 
       <!-- ==================== TAB 2: USER LIFECYCLE ==================== -->
@@ -704,16 +748,18 @@
         enrollSelect.innerHTML = '<option value="" disabled selected>Select a course...</option>';
 
         if (courses.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3">No courses found.</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3">No courses found.</td></tr>';
+          updateArchiveCount_();
           return;
         }
 
         courses.forEach(c => {
           tbody.innerHTML += `
             <tr>
-              <td><strong>${c.name}</strong></td>
-              <td>${c.section}</td>
-              <td><code class="text-primary">${c.enrollmentCode || 'N/A'}</code></td>
+              <td><input type="checkbox" class="form-check-input course-check" value="${c.id}"></td>
+              <td><strong>${escapeHtml(c.name)}</strong></td>
+              <td>${escapeHtml(c.section)}</td>
+              <td><code class="text-primary">${escapeHtml(c.enrollmentCode || 'N/A')}</code></td>
               <td class="text-end">
                 <button class="btn btn-outline-danger btn-sm" onclick="deleteCourse('${c.id}')" title="Delete Course">
                   <i class="bi bi-trash"></i>
@@ -721,10 +767,11 @@
               </td>
             </tr>
           `;
-          enrollSelect.innerHTML += `<option value="${c.id}">${c.name} (${c.section})</option>`;
+          enrollSelect.innerHTML += `<option value="${c.id}">${escapeHtml(c.name)} (${escapeHtml(c.section)})</option>`;
         });
+        updateArchiveCount_();
       }).withFailureHandler(err => {
-         tbody.innerHTML = `<tr><td colspan="4" class="text-danger">Error: ${err.message}</td></tr>`;
+         tbody.innerHTML = `<tr><td colspan="5" class="text-danger">Error: ${escapeHtml(err.message)}</td></tr>`;
       }).listCourses();
     }
 
@@ -838,6 +885,127 @@
         setLoader(false);
         alert("Delete Failed: " + err.message);
       }).deleteClassroomCourse(id);
+    }
+
+    function updateArchiveCount_() {
+      const count = getCheckedValues('.course-check').length;
+      const archiveBtn = document.getElementById('archiveSelectedBtn');
+      const deleteBtn = document.getElementById('deleteSelectedActiveBtn');
+      if (archiveBtn) archiveBtn.disabled = count === 0;
+      if (deleteBtn) deleteBtn.disabled = count === 0;
+      const archiveCountEl = document.getElementById('archiveCount');
+      const deleteActiveCountEl = document.getElementById('deleteActiveCount');
+      if (archiveCountEl) archiveCountEl.textContent = count;
+      if (deleteActiveCountEl) deleteActiveCountEl.textContent = count;
+    }
+
+    function archiveSelectedCourses() {
+      const ids = getCheckedValues('.course-check');
+      if (ids.length === 0) return;
+      if (!confirm(`Archive ${ids.length} course(s)?\n\nArchived courses become read-only. You can unarchive them later in Google Classroom.`)) return;
+      setLoader(true, `Archiving ${ids.length} course(s)...`);
+      google.script.run
+        .withSuccessHandler(result => {
+          setLoader(false);
+          renderBatchCourseResult_(result, 'archiveResultBox', 'archived');
+          loadCourses();
+        })
+        .withFailureHandler(err => {
+          setLoader(false);
+          alert("Archive failed: " + err.message);
+        })
+        .archiveClassroomCourses(ids);
+    }
+
+    function deleteSelectedActiveCourses() {
+      const ids = getCheckedValues('.course-check');
+      if (ids.length === 0) return;
+      if (!confirm(`Permanently delete ${ids.length} course(s)?\n\nThis action CANNOT be undone. All course data will be lost.`)) return;
+      setLoader(true, `Deleting ${ids.length} course(s)...`);
+      google.script.run
+        .withSuccessHandler(result => {
+          setLoader(false);
+          renderBatchCourseResult_(result, 'archiveResultBox', 'deleted');
+          loadCourses();
+        })
+        .withFailureHandler(err => {
+          setLoader(false);
+          alert("Delete failed: " + err.message);
+        })
+        .deleteClassroomCourses(ids);
+    }
+
+    function loadArchivedCourses() {
+      const tbody = document.getElementById('archivedCourseTableBody');
+      tbody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-3">Loading...</td></tr>';
+      google.script.run
+        .withSuccessHandler(courses => {
+          tbody.innerHTML = '';
+          if (courses.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" class="text-center py-3">No archived courses found.</td></tr>';
+            updateArchivedDeleteCount_();
+            return;
+          }
+          courses.forEach(c => {
+            tbody.innerHTML += `
+              <tr>
+                <td><input type="checkbox" class="form-check-input archived-check" value="${c.id}"></td>
+                <td><strong>${escapeHtml(c.name)}</strong></td>
+                <td>${escapeHtml(c.section)}</td>
+                <td class="text-muted small">${escapeHtml(c.ownerId)}</td>
+              </tr>
+            `;
+          });
+          updateArchivedDeleteCount_();
+        })
+        .withFailureHandler(err => {
+          tbody.innerHTML = `<tr><td colspan="4" class="text-danger">Error: ${escapeHtml(err.message)}</td></tr>`;
+        })
+        .listArchivedCourses();
+    }
+
+    function updateArchivedDeleteCount_() {
+      const count = getCheckedValues('.archived-check').length;
+      const btn = document.getElementById('deleteSelectedArchivedBtn');
+      const countEl = document.getElementById('deleteArchivedCount');
+      if (btn) btn.disabled = count === 0;
+      if (countEl) countEl.textContent = count;
+    }
+
+    function deleteSelectedArchivedCourses() {
+      const ids = getCheckedValues('.archived-check');
+      if (ids.length === 0) return;
+      if (!confirm(`Permanently delete ${ids.length} archived course(s)?\n\nThis action CANNOT be undone.`)) return;
+      setLoader(true, `Deleting ${ids.length} archived course(s)...`);
+      google.script.run
+        .withSuccessHandler(result => {
+          setLoader(false);
+          renderBatchCourseResult_(result, 'deleteArchivedResultBox', 'deleted');
+          loadArchivedCourses();
+        })
+        .withFailureHandler(err => {
+          setLoader(false);
+          alert("Delete failed: " + err.message);
+        })
+        .deleteClassroomCourses(ids);
+    }
+
+    function renderBatchCourseResult_(result, boxId, verb) {
+      const el = document.getElementById(boxId);
+      if (!el || !result) return;
+      const s = result.summary || {};
+      const count = s[verb] || 0;
+      const hasFailed = s.failed > 0;
+      const statusClass = hasFailed ? "alert-warning" : "alert-success";
+      const label = verb.charAt(0).toUpperCase() + verb.slice(1);
+      const failedHtml = (result.failed || []).length
+        ? `<ul class="mb-0 mt-1 ps-3">${result.failed.map(f => `<li>${escapeHtml(f.id)}: ${escapeHtml(f.reason)}</li>`).join('')}</ul>`
+        : '';
+      el.innerHTML = `
+        <div class="alert ${statusClass} mb-0 py-2">
+          <strong>${label}: ${count}</strong> | Failed: ${s.failed}${failedHtml}
+        </div>
+      `;
     }
 
     function loadTeacherCandidates(ouPath) {

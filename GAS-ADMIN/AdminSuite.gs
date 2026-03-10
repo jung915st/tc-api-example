@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.0.0
- * Updated: 2026-02-18 (Timezone UTC+8)
+ * Version: 2.1.0
+ * Updated: 2026-03-10 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.1.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -234,6 +234,26 @@ function listCourses() {
 }
 
 /**
+ * Lists archived courses.
+ */
+function listArchivedCourses() {
+  try {
+    const response = Classroom.Courses.list({ courseStates: ['ARCHIVED'], pageSize: 50 });
+    const courses = response.courses || [];
+    logSystemAction_("LIST_ARCHIVED_COURSES", "N/A", "SUCCESS", `Retrieved ${courses.length} archived courses`);
+    return courses.map(c => ({
+      id: c.id,
+      name: c.name,
+      section: c.section || "",
+      ownerId: c.ownerId
+    }));
+  } catch (err) {
+    logSystemAction_("LIST_ARCHIVED_COURSES", "N/A", "ERROR", err.message);
+    throw err;
+  }
+}
+
+/**
  * Deletes a course.
  */
 function deleteClassroomCourse(courseId) {
@@ -260,6 +280,102 @@ function deleteClassroomCourse(courseId) {
     logSystemAction_("DELETE_COURSE", courseId, "FAILED", e.message);
     throw new Error("Delete Failed: " + e.message);
   }
+}
+
+/**
+ * Archives one or more Classroom courses using batch PATCH requests.
+ * Archived courses become read-only but can be unarchived later.
+ * @param {string[]} courseIds - Array of course IDs to archive.
+ * @return {{ summary: {total, archived, failed}, archived: [{id}], failed: [{id, reason}] }}
+ */
+function archiveClassroomCourses(courseIds) {
+  if (!Array.isArray(courseIds) || courseIds.length === 0) {
+    throw new Error("courseIds must be a non-empty array.");
+  }
+
+  const operations = courseIds.map(id => ({
+    contentId: `archive-${id}`,
+    method: "PATCH",
+    path: `/v1/courses/${encodeURIComponent(id)}?updateMask=courseState`,
+    body: { courseState: "ARCHIVED" }
+  }));
+
+  const results = executeBatchOperations_(operations);
+  const resultMap = mapBatchResultsByContentId_(results);
+
+  const archived = [];
+  const failed = [];
+
+  courseIds.forEach(id => {
+    const r = resultMap[`archive-${id}`];
+    if (r && r.ok) {
+      archived.push({ id });
+    } else {
+      failed.push({ id, reason: (r && r.message) || "No response" });
+    }
+  });
+
+  const status = failed.length === 0 ? "SUCCESS" : (archived.length === 0 ? "FAILED" : "PARTIAL");
+  logSystemAction_(
+    "BATCH_ARCHIVE_COURSES",
+    "Batch",
+    status,
+    `Total: ${courseIds.length}, Archived: ${archived.length}, Failed: ${failed.length}`
+  );
+
+  return {
+    summary: { total: courseIds.length, archived: archived.length, failed: failed.length },
+    archived,
+    failed
+  };
+}
+
+/**
+ * Batch-deletes one or more courses permanently using multipart batch requests.
+ * Works on courses of any state (ACTIVE or ARCHIVED).
+ * @param {string[]} courseIds - Array of course IDs to delete.
+ * @return {{ summary: {total, deleted, failed}, deleted: [{id}], failed: [{id, reason}] }}
+ */
+function deleteClassroomCourses(courseIds) {
+  if (!Array.isArray(courseIds) || courseIds.length === 0) {
+    throw new Error("courseIds must be a non-empty array.");
+  }
+
+  const operations = courseIds.map(id => ({
+    contentId: `delete-${id}`,
+    method: "DELETE",
+    path: `/v1/courses/${encodeURIComponent(id)}`,
+    body: {}
+  }));
+
+  const results = executeBatchOperations_(operations);
+  const resultMap = mapBatchResultsByContentId_(results);
+
+  const deleted = [];
+  const failed = [];
+
+  courseIds.forEach(id => {
+    const r = resultMap[`delete-${id}`];
+    if (r && r.ok) {
+      deleted.push({ id });
+    } else {
+      failed.push({ id, reason: (r && r.message) || "No response" });
+    }
+  });
+
+  const status = failed.length === 0 ? "SUCCESS" : (deleted.length === 0 ? "FAILED" : "PARTIAL");
+  logSystemAction_(
+    "BATCH_DELETE_COURSES",
+    "Batch",
+    status,
+    `Total: ${courseIds.length}, Deleted: ${deleted.length}, Failed: ${failed.length}`
+  );
+
+  return {
+    summary: { total: courseIds.length, deleted: deleted.length, failed: failed.length },
+    deleted,
+    failed
+  };
 }
 
 function addStudentsToCourse(courseId, studentEmails) {
