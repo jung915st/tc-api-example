@@ -243,7 +243,7 @@
                 <!-- Step 1: Select Course -->
                 <div class="mb-3">
                   <label class="form-label text-muted small fw-bold">1. TARGET COURSE</label>
-                  <select id="enrollCourseSelect" class="form-select bg-light">
+                  <select id="enrollCourseSelect" class="form-select bg-light" onchange="onCourseSelectChange()">
                     <option value="" disabled selected>Select a course from the left...</option>
                   </select>
                 </div>
@@ -657,6 +657,8 @@
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     // --- GLOBAL UTILS ---
+    let enrolledEmailsCache_ = null; // null = not yet fetched; Set = ready
+
     window.onload = function() {
       // Init Drive Date to 1 year ago by default
       const d = new Date();
@@ -740,6 +742,7 @@
     // --- CLASSROOM FUNCTIONS ---
 
     function loadCourses() {
+      enrolledEmailsCache_ = null;
       const tbody = document.getElementById('courseTableBody');
       const enrollSelect = document.getElementById('enrollCourseSelect');
       
@@ -773,6 +776,20 @@
       }).withFailureHandler(err => {
          tbody.innerHTML = `<tr><td colspan="5" class="text-danger">Error: ${escapeHtml(err.message)}</td></tr>`;
       }).listCourses();
+    }
+
+    function onCourseSelectChange() {
+      const courseId = document.getElementById('enrollCourseSelect').value;
+      enrolledEmailsCache_ = null;
+      if (!courseId) return;
+      google.script.run
+        .withSuccessHandler(emails => {
+          enrolledEmailsCache_ = new Set(emails);
+        })
+        .withFailureHandler(() => {
+          enrolledEmailsCache_ = new Set();
+        })
+        .getEnrolledStudentEmails(courseId);
     }
 
     function createCourse() {
@@ -1050,6 +1067,7 @@
         }
 
         const checkClass = resolveChecklistClass_(containerId);
+        const isClassroomEnroll = (containerId === 'studentCheckList');
 
         containerEl.innerHTML = `
           <div class="form-check border-bottom pb-2 mb-2">
@@ -1059,11 +1077,18 @@
         `;
 
         users.forEach(u => {
+          const isEnrolled = isClassroomEnroll
+            && enrolledEmailsCache_ instanceof Set
+            && enrolledEmailsCache_.has(u.email.toLowerCase());
+          const enrolledBadge = isEnrolled
+            ? '<span class="badge bg-success ms-1" style="font-size:0.7em">已加入</span>'
+            : '';
           containerEl.innerHTML += `
             <div class="form-check">
-              <input class="form-check-input ${checkClass}" type="checkbox" value="${u.email}" id="${checkClass}_${u.email}">
+              <input class="form-check-input ${checkClass}" type="checkbox" value="${u.email}"
+                id="${checkClass}_${u.email}" ${isEnrolled ? 'checked' : ''}>
               <label class="form-check-label small" for="${checkClass}_${u.email}">
-                ${u.name} <span class="text-muted">(${u.email})</span>
+                ${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.email)})</span>${enrolledBadge}
               </label>
             </div>
           `;

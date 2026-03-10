@@ -1,6 +1,6 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.1.0
+ * Version: 2.2.0
  * Updated: 2026-03-10 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.1.0";
+const APP_VERSION = "2.2.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -394,6 +394,28 @@ function addStudentsToCourse(courseId, studentEmails) {
   });
   logSystemAction_("ADD_STUDENTS", courseId, "COMPLETE", `Success: ${results.success.length}, Errors: ${results.errors.length}`);
   return { message: `Processed ${studentEmails.length} students.`, details: results };
+}
+
+function getEnrolledStudentEmails(courseId) {
+  if (!courseId) return [];
+  try {
+    const emails = [];
+    let pageToken = null;
+    do {
+      const response = Classroom.Courses.Students.list(courseId, {
+        pageSize: 200,
+        pageToken: pageToken
+      });
+      (response.students || []).forEach(s => {
+        const email = s.profile && s.profile.emailAddress;
+        if (email) emails.push(email.toLowerCase());
+      });
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+    return emails;
+  } catch (e) {
+    return [];
+  }
 }
 
 /**
