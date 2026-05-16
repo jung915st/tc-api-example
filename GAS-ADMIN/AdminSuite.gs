@@ -1,16 +1,16 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.2.1
- * Updated: 2026-03-10 (Timezone UTC+8)
+ * Version: 2.3.0
+ * Updated: 2026-05-16 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
  * 3. Directory: Inactive User Detection, Suspend, Move OU
  * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
- * 5. Drive: Outdated File Auditing (Fixed Sort: Largest then Oldest), Batch Delete/Archive with Trash fallback
+ * 5. Drive: Outdated File Auditing with paginated BFS recursive sub-directory scan; results saved to Drive_Audit_Logs sheet with owner Gmail; Batch Delete/Archive with Trash fallback
  * 6. Email: Custom HTML notification sending with variable support ({name}, {email})
- * 7. Logging: Centralized logging to Spreadsheet (UTC+8)
+ * 7. Logging: Centralized logging to Spreadsheet (UTC+8); Drive audit snapshots persisted per run
  * * * REQUIRED SCOPES:
  * @include https://www.googleapis.com/auth/script.scriptapp
  * @include https://www.googleapis.com/auth/script.external_request
@@ -26,14 +26,15 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.3.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
   SHEET_NAME_LOGS: "Classroom_Logs",
   SHEET_NAME_ACTIONS: "Action_Logs",
   SHEET_NAME_GROUP_AUDIT: "Group_Audit_Logs",
-  SHEET_NAME_EMAILS: "Email_Logs", // New Log Sheet for Feature 5
+  SHEET_NAME_EMAILS: "Email_Logs",
+  SHEET_NAME_DRIVE_AUDIT: "Drive_Audit_Logs",
   PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
 };
 
@@ -1894,48 +1895,133 @@ function checkDeletionQueue() {
 
 /**
  * Finds files older than a specific date. Supports All Drives.
- * Fixed Sort: Largest files first (quotaBytesUsed desc), then Oldest (modifiedTime asc)
- * * @param {string} dateString - YYYY-MM-DD (Filter Condition)
+ * Paginates past the 100-item limit and recursively scans inside every
+ * discovered folder (BFS) so nested files are never missed.
+ * Results are persisted to Drive_Audit_Logs sheet.
+ * @param {string} dateString - YYYY-MM-DD cutoff
  */
 function findOutdatedFiles(dateString) {
   try {
-    // 1. Filter Condition: Date Cutoff (One condition)
     if (!dateString) throw new Error("Date string is required (YYYY-MM-DD).");
-    const cutoff = '${dateString}T00:00:00Z';
-    const query = "modifiedTime < '" + cutoff + "' and trashed = false";
-    
-    // 2. Fixed Sort Logic: Largest First, then Oldest
-    const orderBy = "quotaBytesUsed desc, modifiedTime"; 
+    const cutoff = `${dateString}T00:00:00Z`;
+    const FOLDER_MIME = "application/vnd.google-apps.folder";
+    const MAX_TOTAL = 500;
 
-    // 3. Call Drive API (v3)
-    const response = Drive.Files.list({
-      q: query,
-      pageSize: 100,
-      includeItemsFromAllDrives: true,
-      supportsAllDrives: true,
-      corpora: 'allDrives',
-      orderBy: orderBy,
-      fields: "files(id,name,webViewLink,owners(emailAddress),modifiedTime,size,quotaBytesUsed,mimeType)"
+    // 1. Global paginated search across all drives
+    const allItems = fetchDriveFilesWithPagination_(
+      `modifiedTime < '${cutoff}' and trashed = false`,
+      MAX_TOTAL
+    );
+
+    // 2. BFS — for every discovered folder, recursively fetch its full contents
+    //    (no date filter on children: an old folder may hold recently added files)
+    const seenIds = new Set(allItems.map(f => f.id));
+    const folderQueue = allItems.filter(f => f.mimeType === FOLDER_MIME);
+
+    while (folderQueue.length > 0 && allItems.length < MAX_TOTAL) {
+      const folder = folderQueue.shift();
+      const children = fetchDriveFilesWithPagination_(
+        `'${folder.id}' in parents and trashed = false`,
+        MAX_TOTAL - allItems.length
+      );
+      for (const child of children) {
+        if (!seenIds.has(child.id)) {
+          seenIds.add(child.id);
+          allItems.push(child);
+          if (child.mimeType === FOLDER_MIME && allItems.length < MAX_TOTAL) {
+            folderQueue.push(child);
+          }
+        }
+      }
+    }
+
+    // 3. Sort: largest first, then oldest
+    allItems.sort((a, b) => {
+      const sizeDiff = Number(b.quotaBytesUsed || 0) - Number(a.quotaBytesUsed || 0);
+      if (sizeDiff !== 0) return sizeDiff;
+      return new Date(a.modifiedTime) - new Date(b.modifiedTime);
     });
 
-    // 4. Parse Response
-    const items = response.files || [];
-    
-    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS", 'Found ${items.length} files. Sort: ${orderBy}');
+    // 4. Persist audit snapshot to spreadsheet
+    appendDriveAuditLog_(allItems, dateString);
 
-    // 5. Map to UI format
-    return items.map(f => ({
+    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS",
+      `Found ${allItems.length} items (cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.`);
+
+    // 5. Map to UI format (shape unchanged — no frontend changes required)
+    return allItems.map(f => ({
       id: f.id,
       name: f.name,
       link: f.webViewLink,
       owner: (f.owners && f.owners.length > 0) ? f.owners[0].emailAddress : "Shared Drive",
       modified: Utilities.formatDate(new Date(f.modifiedTime), CONFIG.TIME_ZONE, "yyyy-MM-dd"),
       size: (Number(f.size || f.quotaBytesUsed || 0) / 1024 / 1024).toFixed(2) + " MB",
-      isFolder: f.mimeType === "application/vnd.google-apps.folder"
+      isFolder: f.mimeType === FOLDER_MIME
     }));
   } catch (e) {
     logSystemAction_("AUDIT_DRIVE", "Drive", "ERROR", e.message);
     throw e;
+  }
+}
+
+/**
+ * Paginated Drive.Files.list wrapper. Follows nextPageToken until maxItems reached.
+ * orderBy omitted — not supported with corpora='allDrives'.
+ */
+function fetchDriveFilesWithPagination_(query, maxItems) {
+  const results = [];
+  let pageToken = null;
+  do {
+    const params = {
+      q: query,
+      pageSize: 100,
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+      corpora: 'allDrives',
+      fields: "nextPageToken,files(id,name,webViewLink,owners(emailAddress),modifiedTime,size,quotaBytesUsed,mimeType)"
+    };
+    if (pageToken) params.pageToken = pageToken;
+    const response = Drive.Files.list(params);
+    results.push(...(response.files || []));
+    pageToken = response.nextPageToken || null;
+  } while (pageToken && results.length < maxItems);
+  return results.slice(0, maxItems);
+}
+
+/**
+ * Appends one row per file to Drive_Audit_Logs sheet.
+ * Owner column stores the full Gmail address (e.g. abc@workspace.domain).
+ */
+function appendDriveAuditLog_(items, cutoffDate) {
+  try {
+    const ss = getDBSpreadsheet_();
+    let sheet = ss.getSheetByName(CONFIG.SHEET_NAME_DRIVE_AUDIT);
+    if (!sheet) {
+      sheet = ss.insertSheet(CONFIG.SHEET_NAME_DRIVE_AUDIT);
+      sheet.appendRow([
+        "Timestamp (UTC+8)", "Cutoff Date", "File Name", "File ID",
+        "Owner (Gmail)", "Modified Date", "Size (MB)", "Type", "Link"
+      ]);
+      sheet.setFrozenRows(1);
+    }
+    const timestamp = Utilities.formatDate(new Date(), CONFIG.TIME_ZONE, "yyyy-MM-dd HH:mm:ss");
+    const FOLDER_MIME = "application/vnd.google-apps.folder";
+    const rows = items.map(f => [
+      timestamp,
+      cutoffDate,
+      f.name,
+      f.id,
+      (f.owners && f.owners.length > 0) ? f.owners[0].emailAddress : "Shared Drive",
+      Utilities.formatDate(new Date(f.modifiedTime), CONFIG.TIME_ZONE, "yyyy-MM-dd"),
+      (Number(f.size || f.quotaBytesUsed || 0) / 1024 / 1024).toFixed(2),
+      f.mimeType === FOLDER_MIME ? "Folder" : "File",
+      f.webViewLink || ""
+    ]);
+    if (rows.length > 0) {
+      sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, rows[0].length).setValues(rows);
+    }
+  } catch (e) {
+    console.error("Drive audit log write failed", e);
   }
 }
 
