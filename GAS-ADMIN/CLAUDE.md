@@ -62,6 +62,7 @@ A single Google Spreadsheet stores all state (configured via `setDbSpreadsheetId
 | `Action_Logs` | User lifecycle events | — |
 | `Group_Audit_Logs` | Group/member operation audit | 5,000 rows |
 | `Email_Logs` | Email send history | — |
+| `Drive_Audit_Logs` | Drive audit snapshots (one row per file per run) | — |
 
 ### Naming Conventions
 
@@ -92,6 +93,17 @@ Group member insertions use 3 attempts with linear backoff (3 s, 6 s, 9 s). "Alr
 ### Error Handling
 
 All public functions wrap their body in `try/catch` and return structured error objects. Do not use `throw` across the GAS bridge — return `{ error: message }` instead. Helper utilities: `extractErrorReasonFromException_()`, `safeJsonParse_()`, `extractApiErrorMessage_()`.
+
+### Drive Audit — findOutdatedFiles
+
+`findOutdatedFiles(dateString)` works in two phases:
+
+1. **Paginated global search** — calls `fetchDriveFilesWithPagination_()` which follows `nextPageToken` until all matching files are collected (cap: 500 total). `orderBy` is intentionally omitted — it is unsupported when `corpora: 'allDrives'` and causes an "Invalid Value" error.
+2. **BFS recursive folder scan** — for every folder discovered in step 1, fetches all its children (no date filter, so recently-added files inside stale folders are included), de-duplicates by file ID, and queues any nested sub-folders for further traversal.
+
+After both phases, results are sorted in memory (largest `quotaBytesUsed` first, then oldest `modifiedTime`) and written to the `Drive_Audit_Logs` sheet via `appendDriveAuditLog_()`. The owner column stores the full Gmail address (e.g. `abc@workspace.domain`); Shared Drive items show `"Shared Drive"`.
+
+The return shape `{ id, name, link, owner, modified, size, isFolder }` is consumed directly by the frontend `auditDrive()` function and must not change.
 
 ### Drive Delete Fallback Chain
 
