@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.3.0
- * Updated: 2026-05-16 (Timezone UTC+8)
+ * Version: 2.3.2
+ * Updated: 2026-05-19 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.2";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -1905,7 +1905,9 @@ function findOutdatedFiles(dateString) {
     if (!dateString) throw new Error("Date string is required (YYYY-MM-DD).");
     const cutoff = `${dateString}T00:00:00Z`;
     const FOLDER_MIME = "application/vnd.google-apps.folder";
-    const MAX_TOTAL = 500;
+    const MAX_TOTAL = 500;       // items returned to UI and written to log
+    const MAX_BFS_ITEMS = 2000;  // internal ceiling during BFS expansion
+    const BFS_PAGE_SIZE = 100;   // children fetched per folder per API call
 
     // 1. Global paginated search across all drives
     const allItems = fetchDriveFilesWithPagination_(
@@ -1913,22 +1915,25 @@ function findOutdatedFiles(dateString) {
       MAX_TOTAL
     );
 
-    // 2. BFS — for every discovered folder, recursively fetch its full contents
-    //    (no date filter on children: an old folder may hold recently added files)
+    // 2. BFS — always runs on every discovered folder regardless of how many items
+    //    the initial search already found. BFS expands up to MAX_BFS_ITEMS total
+    //    so it cannot be starved when the initial search fills MAX_TOTAL.
+    //    No date filter on children: an old folder may contain recently added files.
     const seenIds = new Set(allItems.map(f => f.id));
     const folderQueue = allItems.filter(f => f.mimeType === FOLDER_MIME);
 
-    while (folderQueue.length > 0 && allItems.length < MAX_TOTAL) {
+    while (folderQueue.length > 0 && allItems.length < MAX_BFS_ITEMS) {
       const folder = folderQueue.shift();
       const children = fetchDriveFilesWithPagination_(
         `'${folder.id}' in parents and trashed = false`,
-        MAX_TOTAL - allItems.length
+        BFS_PAGE_SIZE,
+        folder.driveId || null
       );
       for (const child of children) {
         if (!seenIds.has(child.id)) {
           seenIds.add(child.id);
           allItems.push(child);
-          if (child.mimeType === FOLDER_MIME && allItems.length < MAX_TOTAL) {
+          if (child.mimeType === FOLDER_MIME) {
             folderQueue.push(child);
           }
         }
@@ -1942,14 +1947,17 @@ function findOutdatedFiles(dateString) {
       return new Date(a.modifiedTime) - new Date(b.modifiedTime);
     });
 
-    // 4. Persist audit snapshot to spreadsheet
-    appendDriveAuditLog_(allItems, dateString);
+    // 4. Take top MAX_TOTAL after sort so log and UI always receive the largest files
+    const resultItems = allItems.slice(0, MAX_TOTAL);
+
+    // 5. Persist audit snapshot to spreadsheet
+    appendDriveAuditLog_(resultItems, dateString);
 
     logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS",
-      `Found ${allItems.length} items (cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.`);
+      `Found ${allItems.length} items (showing top ${resultItems.length}, cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.`);
 
-    // 5. Map to UI format (shape unchanged — no frontend changes required)
-    return allItems.map(f => ({
+    // 6. Map to UI format (shape unchanged — no frontend changes required)
+    return resultItems.map(f => ({
       id: f.id,
       name: f.name,
       link: f.webViewLink,
@@ -1968,7 +1976,7 @@ function findOutdatedFiles(dateString) {
  * Paginated Drive.Files.list wrapper. Follows nextPageToken until maxItems reached.
  * orderBy omitted — not supported with corpora='allDrives'.
  */
-function fetchDriveFilesWithPagination_(query, maxItems) {
+function fetchDriveFilesWithPagination_(query, maxItems, sharedDriveId) {
   const results = [];
   let pageToken = null;
   do {
@@ -1977,9 +1985,14 @@ function fetchDriveFilesWithPagination_(query, maxItems) {
       pageSize: 100,
       includeItemsFromAllDrives: true,
       supportsAllDrives: true,
-      corpora: 'allDrives',
-      fields: "nextPageToken,files(id,name,webViewLink,owners(emailAddress),modifiedTime,size,quotaBytesUsed,mimeType)"
+      fields: "nextPageToken,files(id,name,webViewLink,owners(emailAddress),modifiedTime,size,quotaBytesUsed,mimeType,driveId)"
     };
+    if (sharedDriveId) {
+      params.corpora = 'drive';
+      params.driveId = sharedDriveId;
+    } else {
+      params.corpora = 'allDrives';
+    }
     if (pageToken) params.pageToken = pageToken;
     const response = Drive.Files.list(params);
     results.push(...(response.files || []));
