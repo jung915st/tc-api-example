@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.3.2
- * Updated: 2026-05-19 (Timezone UTC+8)
+ * Version: 2.3.3
+ * Updated: 2026-06-23 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.3.3";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -1796,8 +1796,8 @@ function moveUsersToOU(emails, targetOU) {
       count++;
     } catch (err) { errors.push(email); }
   });
-  logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", 'Moved: ${count}');
-  return { message: 'Moved ${count} users.', errors: errors };
+  logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", `Moved: ${count}`);
+  return { message: `Moved ${count} users.`, errors: errors };
 }
 
 /* =========================================
@@ -1832,8 +1832,8 @@ function processUserSuspension(emails) {
       count++;
     } catch (err) {}
   });
-  logSystemAction_("SUSPEND_BATCH", "Batch", "SUCCESS", 'Suspended ${count} users.');
-  return 'Suspended ${count} users. Deletion scheduled: ${formattedDeletionDate}.';
+  logSystemAction_("SUSPEND_BATCH", "Batch", "SUCCESS", `Suspended ${count} users.`);
+  return `Suspended ${count} users. Deletion scheduled: ${formattedDeletionDate}.`;
 }
 
 function syncSuspendedToQueue() {
@@ -1858,7 +1858,7 @@ function syncSuspendedToQueue() {
     });
     pageToken = response.nextPageToken;
   } while (pageToken);
-  return 'Added ${syncedCount} suspended accounts to queue.';
+  return `Added ${syncedCount} suspended accounts to queue.`;
 }
 
 function checkDeletionQueue() {
@@ -1886,7 +1886,7 @@ function checkDeletionQueue() {
     updatedRows.push(row);
   }
   logSheet.getRange(1, 1, updatedRows.length, updatedRows[0].length).setValues(updatedRows);
-  return 'Deleted ${deletedCount} accounts.';
+  return `Deleted ${deletedCount} accounts.`;
 }
 
 /* =========================================
@@ -2063,8 +2063,8 @@ function manageFiles(fileIds, action) {
       }
       count++;
     } catch (e) {
-      errors.push('${id}: ${e.message}');
-      console.error('Error processing ${id}:', e);
+      errors.push(`${id}: ${e.message}`);
+      console.error(`Error processing ${id}:`, e);
     }
   });
   
@@ -2074,35 +2074,35 @@ function manageFiles(fileIds, action) {
     ? (hasFallbackTrash ? "PARTIAL" : "SUCCESS")
     : (count > 0 ? "PARTIAL" : "FAILED");
   const fallbackText = hasFallbackTrash
-    ? '; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)'
+    ? `; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)`
     : "";
-  const errorPreview = errors.length > 0 ? '; Errors: ${errors.slice(0, 5).join(" | ")}' : "";
+  const errorPreview = errors.length > 0 ? `; Errors: ${errors.slice(0, 5).join(" | ")}` : "";
   if (action === 'delete') {
     logSystemAction_(
       "MANAGE_FILES",
       "Batch",
       status,
-      truncateLogDetail_('Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}', 3500)
+      truncateLogDetail_(`Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}`, 3500)
     );
   } else {
     logSystemAction_(
       "MANAGE_FILES",
       "Batch",
       status,
-      truncateLogDetail_('${verb} ${count}/${fileIds.length} files${errorPreview}', 3500)
+      truncateLogDetail_(`${verb} ${count}/${fileIds.length} files${errorPreview}`, 3500)
     );
   }
 
   if (errors.length === 0 && !hasFallbackTrash) {
-    return 'Successfully ${verb.toLowerCase()} ${count} items.';
+    return `Successfully ${verb.toLowerCase()} ${count} items.`;
   }
   if (action === 'delete') {
-    const base = 'Deleted ${deleteCount} item(s).';
-    const fallbackNote = hasFallbackTrash ? ' Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).' : "";
-    const errorNote = errors.length > 0 ? ' Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}' : "";
-    return '${base}${fallbackNote}${errorNote}'.trim();
+    const base = `Deleted ${deleteCount} item(s).`;
+    const fallbackNote = hasFallbackTrash ? ` Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).` : "";
+    const errorNote = errors.length > 0 ? ` Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}` : "";
+    return `${base}${fallbackNote}${errorNote}`.trim();
   }
-  return '${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}';
+  return `${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}`;
 }
 
 function removeDriveFileWithCompatibility_(fileId, filesApi) {
@@ -2124,7 +2124,7 @@ function removeDriveFileWithCompatibility_(fileId, filesApi) {
         message: buildDeletePermissionNote_(deleteError)
       };
     } catch (trashError) {
-      throw new Error('${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}');
+      throw new Error(`${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}`);
     }
   }
 }
@@ -2210,7 +2210,7 @@ function isMethodSignatureError_(err) {
 
 function buildDeletePermissionNote_(deleteError) {
   const errorText = getExceptionMessage_(deleteError);
-  return 'Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.';
+  return `Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.`;
 }
 
 function getExceptionMessage_(err) {
@@ -2280,14 +2280,14 @@ function sendCustomEmailBatch(recipientEmails, subject, bodyTemplate) {
       successCount++;
 
     } catch (e) {
-      console.error('Failed to send to ${email}: ${e.message}');
+      console.error(`Failed to send to ${email}: ${e.message}`);
       logSheet.appendRow([new Date(), email, subject, "ERROR: " + e.message, Session.getActiveUser().getEmail()]);
       failCount++;
     }
   });
 
-  logSystemAction_("SEND_EMAIL", "Batch", "COMPLETE", 'Sent: ${successCount}, Failed: ${failCount}');
-  return { message: 'Email sending complete.\nSuccess: ${successCount}\nFailed: ${failCount}', successCount, failCount };
+  logSystemAction_("SEND_EMAIL", "Batch", "COMPLETE", `Sent: ${successCount}, Failed: ${failCount}`);
+  return { message: `Email sending complete.\nSuccess: ${successCount}\nFailed: ${failCount}`, successCount, failCount };
 }
 
 /* =========================================
@@ -2296,5 +2296,5 @@ function sendCustomEmailBatch(recipientEmails, subject, bodyTemplate) {
 
 function testApiConnection() {
   const user = Session.getActiveUser().getEmail();
-  return 'Connected as ${user}';
+  return `Connected as ${user}`;
 }
