@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is written to be **refinement-ready**: it documents the current state (v2.3.3), the full frontend↔backend contract, and the known tech-debt / refinement targets so that feature work does not silently break existing behavior.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is written to be **refinement-ready**: it documents the current state (v2.4.0), the full frontend↔backend contract, and the known tech-debt / refinement targets so that feature work does not silently break existing behavior.
 
 ## Project Overview
 
@@ -10,7 +10,7 @@ GAS-ADMIN is a Google Apps Script (GAS) web application for Google Workspace dom
 - **UI**: Traditional Chinese (繁體中文), Bootstrap 5 CDN + Vanilla JS, Bootstrap Icons
 - **Timezone**: Asia/Taipei (UTC+8) — `CONFIG.TIME_ZONE = "GMT+8"`
 - **Access**: `executeAs: USER_DEPLOYING`, `access: MYSELF` — runs as and is accessible only by the deployer
-- **Current version**: `APP_VERSION = "2.3.3"` (single source of truth at the top of `AdminSuite.gs`; bump it on every shipped change and keep the header docblock date in sync)
+- **Current version**: `APP_VERSION = "2.4.0"` (single source of truth at the top of `AdminSuite.gs`; bump it on every shipped change and keep the header docblock date in sync)
 
 ## Deployment & Testing
 
@@ -65,7 +65,7 @@ These are the functions the frontend calls by name. **Renaming or changing the r
 | `setDbSpreadsheetId(id)` | editor only | string |
 | `testApiConnection()` | `runConnectivityTest()` | string |
 | **Classroom** | | |
-| `createClassroomCourse(payload)` | `createCourse()` | `{id,name,section,enrollmentCode}` |
+| `createClassroomCourse(payload)` | `createCourse()` | `{id,name,section,enrollmentCode}` — `payload` accepts optional `teacherEmail` **and** `teacherEmail2` (both `"me"` = none) |
 | `listCourses()` | `loadCourses()` | `[{id,name,section,enrollmentCode,ownerId}]` |
 | `listArchivedCourses()` | `loadArchivedCourses()` | `[{id,name,section,ownerId}]` |
 | `deleteClassroomCourse(courseId)` | `deleteCourse(id)` | string |
@@ -83,7 +83,7 @@ These are the functions the frontend calls by name. **Renaming or changing the r
 | `assignMembersToGroups(payload)` | `assignSelectedMembersToGroups()` | `{jobId,summary,added,skipped,errors}` |
 | **Directory / Users** | | |
 | `getDomainOUs()` | `loadOUs()` / `initOUs()` | `[orgUnitPath]` (sorted) |
-| `getFilteredUsers(ouPath,cond,date)` | `filterUsers()`, `loadStudentsFromOu()`, `loadTeacherCandidates()` | `[{name,email,lastLogin,suspended,org}]` |
+| `getFilteredUsers(ouPath,cond,date)` | `filterUsers()`, `loadStudentsFromOu()`, `loadTeacherCandidates()` | `[{name,email,lastLogin,suspended,org}]` — natural-sorted by display name (`buildUserSortKey_`: handles Chinese class numerals 一/二/十二 + Arabic seat numbers) |
 | `moveUsersToOU(emails,targetOU)` | `bulkMoveUsers()` | `{message,errors}` |
 | **Lifecycle** | | |
 | `processUserSuspension(emails)` | `suspendSelected()` | string |
@@ -210,7 +210,7 @@ Previously, many strings in Features 3–6 used **single quotes** with `${...}` 
 
 ### 2. 🟠 Defensive null-handling in Directory reads
 
-- `getFilteredUsers` dereferences `user.name.fullName` (line ~1773) — a user with no `name` object throws and aborts the whole listing. Guard with `user.name && user.name.fullName` or `(user.name||{}).fullName`.
+- ✅ `getFilteredUsers` previously dereferenced `user.name.fullName` unguarded (a user with no `name` object threw and aborted the whole listing). Fixed in v2.4.0 — now `(user.name && user.name.fullName) || user.primaryEmail`. Results are also natural-sorted by display name via `buildUserSortKey_`.
 - `moveUsersToOU` / `processUserSuspension` swallow per-item errors silently (`catch(err){}`) — collect reasons into the returned `errors[]` for parity with the batch features.
 
 ### 3. 🟠 Email personalization N+1

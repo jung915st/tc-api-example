@@ -1,10 +1,10 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.3.3
- * Updated: 2026-06-23 (Timezone UTC+8)
+ * Version: 2.4.0
+ * Updated: 2026-06-30 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
- * 1. Classroom: Create/Delete Courses, Add Teachers, Roster Students via OU, Batch Create (CSV/TSV)
+ * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
  * 3. Directory: Inactive User Detection, Suspend, Move OU
  * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.4.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -177,23 +177,32 @@ function createClassroomCourse(payload) {
 
   try {
     const created = Classroom.Courses.create(coursePayload);
-    
-    let teacherStatus = "Owner only (Admin)";
-    if (payload.teacherEmail && payload.teacherEmail !== "me") {
-      try {
-        Classroom.Courses.Teachers.create({ userId: payload.teacherEmail }, created.id);
-        teacherStatus = `Teacher added: ${payload.teacherEmail}`;
-      } catch (e) {
-        teacherStatus = `Created, but failed to add teacher: ${e.message}`;
+
+    // Assign up to two teachers (deduped, ignoring the "me"/owner sentinel).
+    const teacherEmails = [];
+    [payload.teacherEmail, payload.teacherEmail2].forEach(email => {
+      if (email && email !== "me" && teacherEmails.indexOf(email) === -1) {
+        teacherEmails.push(email);
       }
-    }
+    });
+
+    const teacherStatuses = [];
+    teacherEmails.forEach(email => {
+      try {
+        Classroom.Courses.Teachers.create({ userId: email }, created.id);
+        teacherStatuses.push(`Teacher added: ${email}`);
+      } catch (e) {
+        teacherStatuses.push(`Failed to add teacher ${email}: ${e.message}`);
+      }
+    });
+    const teacherStatus = teacherStatuses.length ? teacherStatuses.join("; ") : "Owner only (Admin)";
 
     appendCourseRecordsToSheet_([{
       courseId: created.id,
       name: created.name || payload.name,
       section: created.section || payload.section || "",
       ownerId: created.ownerId || "me",
-      teacherEmail: payload.teacherEmail || "",
+      teacherEmail: teacherEmails.join(", "),
       createdAt: new Date()
     }]);
     
@@ -1734,6 +1743,67 @@ function getDomainOUs() {
 /**
  * Filter users by OU and Login Date condition.
  */
+/**
+ * Converts a Traditional-Chinese numeral string (e.g. "三", "十", "十二", "二十")
+ * to an integer. Returns NaN when any character is not a recognized numeral.
+ * Handles values up to 99, which covers class/grade numbering.
+ */
+function chineseNumeralToInt_(s) {
+  const DIGITS = { "零": 0, "〇": 0, "一": 1, "二": 2, "兩": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9 };
+  if (!s) return NaN;
+  if (s.indexOf("十") !== -1) {
+    const parts = s.split("十");
+    const tensChar = parts[0];
+    const onesChar = parts[1];
+    const tens = tensChar === "" ? 1 : DIGITS[tensChar];
+    const ones = onesChar === "" || onesChar === undefined ? 0 : DIGITS[onesChar];
+    if (tens === undefined || ones === undefined) return NaN;
+    return tens * 10 + ones;
+  }
+  let result = 0;
+  for (const ch of s) {
+    if (DIGITS[ch] === undefined) return NaN;
+    result = result * 10 + DIGITS[ch];
+  }
+  return result;
+}
+
+/**
+ * Builds a natural-sort key for a user display name so that lists ordered by
+ * account/class name (e.g. "2年一班01號…", "2年二班01號…") sort in human order.
+ * Numeric runs — both Arabic ("11") and Chinese-numeral ("二", "十二") — are
+ * normalized to zero-padded width so lexical comparison matches numeric order.
+ */
+function buildUserSortKey_(name) {
+  if (!name) return "";
+  const CN_NUMERALS = "零〇一二兩三四五六七八九十";
+  const PAD_WIDTH = 6;
+  const padNum_ = function (n) { return ("000000" + n).slice(-PAD_WIDTH); };
+  const s = String(name);
+  let key = "";
+  let i = 0;
+  while (i < s.length) {
+    const ch = s[i];
+    if (ch >= "0" && ch <= "9") {
+      let j = i;
+      while (j < s.length && s[j] >= "0" && s[j] <= "9") j++;
+      key += padNum_(parseInt(s.substring(i, j), 10));
+      i = j;
+    } else if (CN_NUMERALS.indexOf(ch) !== -1) {
+      let j = i;
+      while (j < s.length && CN_NUMERALS.indexOf(s[j]) !== -1) j++;
+      const segment = s.substring(i, j);
+      const num = chineseNumeralToInt_(segment);
+      key += isNaN(num) ? segment : padNum_(num);
+      i = j;
+    } else {
+      key += ch;
+      i++;
+    }
+  }
+  return key;
+}
+
 function getFilteredUsers(ouPath, dateCondition, specificDate) {
   let allUsers = [];
   let pageToken = null;
@@ -1770,7 +1840,7 @@ function getFilteredUsers(ouPath, dateCondition, specificDate) {
 
         if (match) {
           allUsers.push({
-            name: user.name.fullName,
+            name: (user.name && user.name.fullName) || user.primaryEmail,
             email: user.primaryEmail,
             lastLogin: lastLogin ? Utilities.formatDate(lastLogin, CONFIG.TIME_ZONE, "yyyy-MM-dd HH:mm") : "Never Logged In",
             suspended: user.suspended,
@@ -1780,7 +1850,13 @@ function getFilteredUsers(ouPath, dateCondition, specificDate) {
       });
       pageToken = response.nextPageToken;
     } while (pageToken);
-    
+
+    // Sort by account/class name in human (natural) order so the UI list reads
+    // "…一班01號", "…一班02號", … "…二班01號" rather than API/email order.
+    allUsers.sort(function (a, b) {
+      return buildUserSortKey_(a.name).localeCompare(buildUserSortKey_(b.name), "zh-Hant");
+    });
+
     return allUsers;
   } catch (e) { 
     throw new Error("User API Error: " + e.message); 

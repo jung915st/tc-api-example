@@ -141,15 +141,30 @@
                     <input type="text" class="form-control form-control-sm" value="Me (Admin) - Cannot be changed" disabled readonly>
                   </div>
 
-                  <!-- Teacher Selection Logic -->
+                  <!-- Teacher Selection Logic (Teacher 1) -->
                   <div class="col-md-12">
-                    <label class="form-label small text-muted mb-1">Assign Teacher (Optional)</label>
+                    <label class="form-label small text-muted mb-1">Assign Teacher 1 (Optional)</label>
                     <div class="input-group">
                       <select id="newCourseTeacher" class="form-select">
                         <option value="me" selected>None (Owner only)</option>
                       </select>
                       <!-- Filter Teachers by OU -->
-                      <select id="teacherOuFilter" class="form-select" onchange="loadTeacherCandidates(this.value)" style="max-width: 40%;">
+                      <select id="teacherOuFilter" class="form-select" onchange="loadTeacherCandidates(this.value, 'newCourseTeacher')" style="max-width: 40%;">
+                        <option value="">Search Teacher by OU...</option>
+                        <!-- Populated via JS initOUs -->
+                      </select>
+                    </div>
+                  </div>
+
+                  <!-- Teacher Selection Logic (Teacher 2) -->
+                  <div class="col-md-12">
+                    <label class="form-label small text-muted mb-1">Assign Teacher 2 (Optional)</label>
+                    <div class="input-group">
+                      <select id="newCourseTeacher2" class="form-select">
+                        <option value="me" selected>None (Owner only)</option>
+                      </select>
+                      <!-- Filter Teachers by OU -->
+                      <select id="teacherOuFilter2" class="form-select" onchange="loadTeacherCandidates(this.value, 'newCourseTeacher2')" style="max-width: 40%;">
                         <option value="">Search Teacher by OU...</option>
                         <!-- Populated via JS initOUs -->
                       </select>
@@ -713,9 +728,12 @@
         const userFilter = document.getElementById('ouSelect');
         userFilter.innerHTML = '<option value="" disabled selected>Select OU...</option><option value="ALL">All OUs</option>' + options;
 
-        // 2. Teacher Filter (Classroom Tab)
+        // 2. Teacher Filters (Classroom Tab) — Teacher 1 & Teacher 2
         const teacherFilter = document.getElementById('teacherOuFilter');
         teacherFilter.innerHTML = '<option value="">Search Teacher by OU...</option><option value="ALL">All OUs</option>' + options;
+
+        const teacherFilter2 = document.getElementById('teacherOuFilter2');
+        if (teacherFilter2) teacherFilter2.innerHTML = '<option value="">Search Teacher by OU...</option><option value="ALL">All OUs</option>' + options;
 
         // 3. Student Source (Classroom Tab)
         const studentSource = document.getElementById('classOuSelect');
@@ -799,20 +817,27 @@
       const name = document.getElementById('newCourseName').value;
       const section = document.getElementById('newCourseSection').value;
       const teacherEmail = document.getElementById('newCourseTeacher').value;
-      
+      const teacherEmail2 = document.getElementById('newCourseTeacher2').value;
+
       if (!name) return alert("Course Name is required.");
-      
+
+      if (teacherEmail !== 'me' && teacherEmail === teacherEmail2) {
+        return alert("Teacher 1 and Teacher 2 cannot be the same person.");
+      }
+
       setLoader(true, "Creating Course...");
       google.script.run.withSuccessHandler(res => {
         setLoader(false);
         alert(`Course Created!\nName: ${res.name}\nCode: ${res.enrollmentCode}`);
         document.getElementById('newCourseName').value = '';
         document.getElementById('newCourseSection').value = '';
+        document.getElementById('newCourseTeacher').value = 'me';
+        document.getElementById('newCourseTeacher2').value = 'me';
         loadCourses();
       }).withFailureHandler(err => {
         setLoader(false);
         alert("Creation Failed: " + err.message);
-      }).createClassroomCourse({ name, section, teacherEmail });
+      }).createClassroomCourse({ name, section, teacherEmail, teacherEmail2 });
     }
 
     function uploadBatchCourses() {
@@ -1028,20 +1053,31 @@
       `;
     }
 
-    function loadTeacherCandidates(ouPath) {
+    function loadTeacherCandidates(ouPath, targetSelectId) {
       if (!ouPath) return;
+      const selId = targetSelectId || 'newCourseTeacher';
+      const sel = document.getElementById(selId);
+      if (!sel) return;
+      const previous = sel.value;
       setLoader(true, "Finding teachers in OU...");
       google.script.run.withSuccessHandler(users => {
         setLoader(false);
-        const sel = document.getElementById('newCourseTeacher');
         sel.innerHTML = '<option value="me">None (Owner only)</option>';
         if (users.length === 0) {
            sel.innerHTML += '<option disabled>No users in this OU</option>';
         } else {
            users.forEach(u => {
-             sel.innerHTML += `<option value="${u.email}">${u.name} (${u.email})</option>`;
+             sel.innerHTML += `<option value="${escapeHtml(u.email)}">${escapeHtml(u.name)} (${escapeHtml(u.email)})</option>`;
            });
         }
+        // Preserve the previous selection if it is still present in the new list.
+        if (previous && previous !== 'me') {
+          const match = Array.prototype.find.call(sel.options, opt => opt.value === previous);
+          if (match) sel.value = previous;
+        }
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Failed to load teachers: " + err.message);
       }).getFilteredUsers(ouPath, "ALL", null);
     }
 

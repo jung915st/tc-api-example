@@ -27,7 +27,10 @@ function runBatchCourseUnitTests() {
     test_buildGroupMemberAssignLogDetail_includesPreview,
     test_removeDriveFileWithCompatibility_prefersDelete,
     test_removeDriveFileWithCompatibility_usesRemoveFallback,
-    test_removeDriveFileWithCompatibility_permissionFallbackToTrash
+    test_removeDriveFileWithCompatibility_permissionFallbackToTrash,
+    test_chineseNumeralToInt_basic,
+    test_buildUserSortKey_ordersByClassThenNumber,
+    test_buildUserSortKey_handlesMissingName
   ];
 
   let passCount = 0;
@@ -390,6 +393,46 @@ function extractContentIdsFromPayload_(payload) {
     ids.push(match[1]);
   }
   return ids;
+}
+
+function test_chineseNumeralToInt_basic() {
+  assertEqual_(chineseNumeralToInt_("一"), 1, "一 -> 1");
+  assertEqual_(chineseNumeralToInt_("五"), 5, "五 -> 5");
+  assertEqual_(chineseNumeralToInt_("十"), 10, "十 -> 10");
+  assertEqual_(chineseNumeralToInt_("十二"), 12, "十二 -> 12");
+  assertEqual_(chineseNumeralToInt_("二十"), 20, "二十 -> 20");
+  assertEqual_(chineseNumeralToInt_("二十一"), 21, "二十一 -> 21");
+  assertTrue_(isNaN(chineseNumeralToInt_("莊")), "Non-numeral -> NaN");
+}
+
+function test_buildUserSortKey_ordersByClassThenNumber() {
+  const names = [
+    "2年二班11號莊明諺",
+    "2年四班11號黃威丞",
+    "2年五班18號劉祐菱",
+    "2年二班14號沈亞臻",
+    "2年三班11號許琇雯",
+    "2年一班01號巫宥穎",
+    "2年一班02號吳沛恩"
+  ];
+  const sorted = names.slice().sort(function (a, b) {
+    return buildUserSortKey_(a).localeCompare(buildUserSortKey_(b), "zh-Hant");
+  });
+  const expected = [
+    "2年一班01號巫宥穎",
+    "2年一班02號吳沛恩",
+    "2年二班11號莊明諺",
+    "2年二班14號沈亞臻",
+    "2年三班11號許琇雯",
+    "2年四班11號黃威丞",
+    "2年五班18號劉祐菱"
+  ];
+  assertEqual_(sorted.join("|"), expected.join("|"), "Names should sort by class (一二三四五) then seat number.");
+}
+
+function test_buildUserSortKey_handlesMissingName() {
+  assertEqual_(buildUserSortKey_(""), "", "Empty name -> empty key.");
+  assertEqual_(buildUserSortKey_(null), "", "Null name -> empty key.");
 }
 
 function assertTrue_(condition, message) {
