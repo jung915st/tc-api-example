@@ -668,12 +668,74 @@
     </div>
   </div>
 
+  <!-- ==================== MANAGE TEACHERS MODAL ==================== -->
+  <div class="modal fade" id="teacherModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">
+            <i class="bi bi-person-badge text-primary"></i>
+            Manage Teachers — <span id="teacherModalCourseName" class="fw-normal"></span>
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-3">
+            <!-- Current Teachers -->
+            <div class="col-md-6">
+              <label class="form-label text-muted small fw-bold">CURRENT TEACHERS</label>
+              <div class="text-muted small mb-1">Uncheck a teacher to remove them. The owner cannot be removed.</div>
+              <div id="teacherCurrentList" class="checklist-scroll" style="max-height: 280px;">
+                <div class="text-center text-muted mt-4">Loading teachers...</div>
+              </div>
+            </div>
+            <!-- Add Teachers -->
+            <div class="col-md-6">
+              <label class="form-label text-muted small fw-bold">ADD TEACHER (FROM OU)</label>
+              <div class="input-group mb-2">
+                <select id="teacherModalOuFilter" class="form-select" onchange="loadTeacherCandidates(this.value, 'teacherModalCandidate')">
+                  <option value="">Search by OU...</option>
+                  <!-- Populated via initOUs -->
+                </select>
+              </div>
+              <div class="input-group mb-2">
+                <select id="teacherModalCandidate" class="form-select">
+                  <option value="me">Select an OU first...</option>
+                </select>
+                <button class="btn btn-outline-primary" type="button" onclick="addTeacherToPending()">
+                  <i class="bi bi-plus-lg"></i> Add
+                </button>
+              </div>
+              <label class="form-label text-muted small fw-bold mt-2">PENDING ADDITIONS</label>
+              <div id="teacherPendingList" class="border rounded p-2 bg-light" style="min-height: 60px; max-height: 150px; overflow-y: auto;">
+                <span class="text-muted small">No teachers queued to add.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+          <button type="button" class="btn btn-primary" onclick="saveTeacherChanges()">
+            <i class="bi bi-check-lg"></i> Apply Changes
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- JavaScript Logic -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
   <script>
     // --- GLOBAL UTILS ---
     let enrolledEmailsCache_ = null; // null = not yet fetched; Set = ready
     let loadedOuEmails_ = null;      // Set of emails rendered in the current OU load
+    let coursesById_ = {};           // id -> course object (cached from listCourses)
+
+    // --- Manage Teachers modal state ---
+    let teacherModalCourseId_ = null;          // course currently being edited
+    let teacherModalCurrent_ = [];             // [{userId,email,name,isOwner}] current roster
+    let teacherModalPendingAdd_ = new Map();   // email -> displayName queued for addition
+    let teacherModalInstance_ = null;          // cached bootstrap.Modal instance
 
     window.onload = function() {
       // Init Drive Date to 1 year ago by default
@@ -735,6 +797,10 @@
         const teacherFilter2 = document.getElementById('teacherOuFilter2');
         if (teacherFilter2) teacherFilter2.innerHTML = '<option value="">Search Teacher by OU...</option><option value="ALL">All OUs</option>' + options;
 
+        // 2b. Teacher Filter inside the "Manage Teachers" modal
+        const teacherModalFilter = document.getElementById('teacherModalOuFilter');
+        if (teacherModalFilter) teacherModalFilter.innerHTML = '<option value="">Search by OU...</option><option value="ALL">All OUs</option>' + options;
+
         // 3. Student Source (Classroom Tab)
         const studentSource = document.getElementById('classOuSelect');
         studentSource.innerHTML = '<option value="" disabled selected>Select OU...</option>' + options;
@@ -769,6 +835,7 @@
       google.script.run.withSuccessHandler(courses => {
         tbody.innerHTML = '';
         enrollSelect.innerHTML = '<option value="" disabled selected>Select a course...</option>';
+        coursesById_ = {};
 
         if (courses.length === 0) {
           tbody.innerHTML = '<tr><td colspan="5" class="text-center py-3">No courses found.</td></tr>';
@@ -777,13 +844,17 @@
         }
 
         courses.forEach(c => {
+          coursesById_[c.id] = c;
           tbody.innerHTML += `
             <tr>
               <td><input type="checkbox" class="form-check-input course-check" value="${c.id}"></td>
               <td><strong>${escapeHtml(c.name)}</strong></td>
               <td>${escapeHtml(c.section)}</td>
               <td><code class="text-primary">${escapeHtml(c.enrollmentCode || 'N/A')}</code></td>
-              <td class="text-end">
+              <td class="text-end text-nowrap">
+                <button class="btn btn-outline-primary btn-sm me-1" onclick="openTeacherManager('${c.id}')" title="Manage Teachers">
+                  <i class="bi bi-person-badge"></i>
+                </button>
                 <button class="btn btn-outline-danger btn-sm" onclick="deleteCourse('${c.id}')" title="Delete Course">
                   <i class="bi bi-trash"></i>
                 </button>
@@ -811,6 +882,129 @@
           enrolledEmailsCache_ = new Set();
         })
         .getEnrolledStudentEmails(courseId);
+    }
+
+    // --- MANAGE TEACHERS (per-course) ---
+
+    function openTeacherManager(courseId) {
+      if (!courseId) return;
+      const course = coursesById_[courseId] || {};
+      teacherModalCourseId_ = courseId;
+      teacherModalCurrent_ = [];
+      teacherModalPendingAdd_ = new Map();
+
+      const titleEl = document.getElementById('teacherModalCourseName');
+      titleEl.textContent = course.name ? `${course.name}${course.section ? ' (' + course.section + ')' : ''}` : courseId;
+
+      // Reset add-picker + pending list to a clean state for this course.
+      document.getElementById('teacherModalOuFilter').value = '';
+      document.getElementById('teacherModalCandidate').innerHTML = '<option value="me">Select an OU first...</option>';
+      renderPendingTeachers_();
+
+      const listEl = document.getElementById('teacherCurrentList');
+      listEl.innerHTML = '<div class="text-center text-muted mt-4">Loading teachers...</div>';
+
+      if (!teacherModalInstance_) {
+        teacherModalInstance_ = new bootstrap.Modal(document.getElementById('teacherModal'));
+      }
+      teacherModalInstance_.show();
+
+      google.script.run.withSuccessHandler(res => {
+        teacherModalCurrent_ = (res && res.teachers) || [];
+        renderCurrentTeachers_();
+      }).withFailureHandler(err => {
+        listEl.innerHTML = `<div class="text-danger small">Failed to load teachers: ${escapeHtml(err.message)}</div>`;
+      }).getCourseTeachers(courseId);
+    }
+
+    function renderCurrentTeachers_() {
+      const listEl = document.getElementById('teacherCurrentList');
+      if (teacherModalCurrent_.length === 0) {
+        listEl.innerHTML = '<div class="text-center text-muted mt-4">No teachers found.</div>';
+        return;
+      }
+      listEl.innerHTML = teacherModalCurrent_.map(t => {
+        const ownerBadge = t.isOwner ? '<span class="badge bg-secondary ms-1" style="font-size:0.7em">Owner</span>' : '';
+        const safeId = encodeURIComponent(t.userId);
+        return `
+          <div class="form-check">
+            <input class="form-check-input teacher-keep-check" type="checkbox"
+              value="${escapeHtml(t.userId)}" id="teacher_keep_${safeId}"
+              data-email="${escapeHtml(t.email)}" checked ${t.isOwner ? 'disabled' : ''}>
+            <label class="form-check-label small" for="teacher_keep_${safeId}">
+              ${escapeHtml(t.name)} <span class="text-muted">(${escapeHtml(t.email || t.userId)})</span>${ownerBadge}
+            </label>
+          </div>`;
+      }).join('');
+    }
+
+    function addTeacherToPending() {
+      const sel = document.getElementById('teacherModalCandidate');
+      const email = sel.value;
+      if (!email || email === 'me') return alert("Please pick a teacher from the OU list first.");
+
+      const lower = email.toLowerCase();
+      // Skip if already a current (kept) teacher.
+      const alreadyCurrent = teacherModalCurrent_.some(t => t.email && t.email.toLowerCase() === lower);
+      if (alreadyCurrent) return alert("That person is already a teacher of this course.");
+      if (teacherModalPendingAdd_.has(lower)) return alert("That teacher is already queued.");
+
+      const label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : email;
+      teacherModalPendingAdd_.set(lower, label);
+      renderPendingTeachers_();
+    }
+
+    function removePendingTeacher(emailLower) {
+      teacherModalPendingAdd_.delete(emailLower);
+      renderPendingTeachers_();
+    }
+
+    function renderPendingTeachers_() {
+      const el = document.getElementById('teacherPendingList');
+      if (teacherModalPendingAdd_.size === 0) {
+        el.innerHTML = '<span class="text-muted small">No teachers queued to add.</span>';
+        return;
+      }
+      let html = '';
+      teacherModalPendingAdd_.forEach((label, emailLower) => {
+        html += `
+          <span class="badge bg-success-subtle text-success border border-success me-1 mb-1" style="font-size:0.85em">
+            ${escapeHtml(label)}
+            <i class="bi bi-x-circle ms-1" style="cursor:pointer" onclick="removePendingTeacher('${escapeHtml(emailLower)}')"></i>
+          </span>`;
+      });
+      el.innerHTML = html;
+    }
+
+    function saveTeacherChanges() {
+      if (!teacherModalCourseId_) return;
+
+      // Removals: any non-owner current teacher whose "keep" box is unchecked.
+      const toRemove = Array.prototype.slice
+        .call(document.querySelectorAll('.teacher-keep-check'))
+        .filter(cb => !cb.checked && !cb.disabled)
+        .map(cb => cb.value);
+
+      const toAdd = Array.from(teacherModalPendingAdd_.keys());
+
+      if (toAdd.length === 0 && toRemove.length === 0) {
+        return alert("No teacher changes to apply.");
+      }
+
+      setLoader(true, `Updating teachers (${toAdd.length} add, ${toRemove.length} remove)...`);
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        const errs = []
+          .concat((res.added && res.added.errors) || [])
+          .concat((res.removed && res.removed.errors) || []);
+        let msg = res.message;
+        if (errs.length) msg += "\n\nIssues:\n- " + errs.join("\n- ");
+        alert(msg);
+        if (teacherModalInstance_) teacherModalInstance_.hide();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Failed to update teachers: " + err.message);
+      }).updateCourseTeachers(teacherModalCourseId_, toAdd, toRemove);
     }
 
     function createCourse() {

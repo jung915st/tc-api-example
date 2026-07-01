@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is written to be **refinement-ready**: it documents the current state (v2.4.0), the full frontend↔backend contract, and the known tech-debt / refinement targets so that feature work does not silently break existing behavior.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It is written to be **refinement-ready**: it documents the current state (v2.5.0), the full frontend↔backend contract, and the known tech-debt / refinement targets so that feature work does not silently break existing behavior.
 
 ## Project Overview
 
@@ -10,7 +10,7 @@ GAS-ADMIN is a Google Apps Script (GAS) web application for Google Workspace dom
 - **UI**: Traditional Chinese (繁體中文), Bootstrap 5 CDN + Vanilla JS, Bootstrap Icons
 - **Timezone**: Asia/Taipei (UTC+8) — `CONFIG.TIME_ZONE = "GMT+8"`
 - **Access**: `executeAs: USER_DEPLOYING`, `access: MYSELF` — runs as and is accessible only by the deployer
-- **Current version**: `APP_VERSION = "2.4.0"` (single source of truth at the top of `AdminSuite.gs`; bump it on every shipped change and keep the header docblock date in sync)
+- **Current version**: `APP_VERSION = "2.5.0"` (single source of truth at the top of `AdminSuite.gs`; bump it on every shipped change and keep the header docblock date in sync)
 
 ## Deployment & Testing
 
@@ -73,6 +73,8 @@ These are the functions the frontend calls by name. **Renaming or changing the r
 | `deleteClassroomCourses(ids)` | `deleteSelected*Courses()` | `{summary,deleted,failed}` |
 | `getEnrolledStudentEmails(courseId)` | `onCourseSelectChange()` | `[email]` |
 | `applyEnrollmentChanges(courseId,toEnroll,toRemove)` | `submitEnrollmentChanges()` | `{message,enrolled,removed}` |
+| `getCourseTeachers(courseId)` | `openTeacherManager()` | `{courseId,ownerId,teachers:[{userId,email,name,isOwner}]}` (owner-first, natural-sorted) |
+| `updateCourseTeachers(courseId,toAdd,toRemove)` | `saveTeacherChanges()` | `{message,added:{success,errors},removed:{success,errors}}` — owner cannot be removed |
 | `processBatchCourseUpload(name,content)` | `uploadBatchCourses()` | full batch result (see below) |
 | `getCourseBatchTemplate(format)` | `downloadBatchTemplate()` | `{filename,mimeType,content}` |
 | `addStudentsToCourse(courseId,emails)` | (legacy path) | `{message,details}` |

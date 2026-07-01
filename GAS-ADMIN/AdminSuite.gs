@@ -1,10 +1,10 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.4.0
+ * Version: 2.5.0
  * Updated: 2026-06-30 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
- * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Roster Students via OU, Batch Create (CSV/TSV)
+ * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Manage (add/remove) teachers per course, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
  * 3. Directory: Inactive User Detection, Suspend, Move OU
  * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.5.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -462,6 +462,124 @@ function applyEnrollmentChanges(courseId, toEnroll, toRemove) {
       (enrolled.errors.length + removed.errors.length > 0
         ? ` (${enrolled.errors.length + removed.errors.length} error(s))` : ''),
     enrolled,
+    removed
+  };
+}
+
+/**
+ * Returns the current teacher roster of a course. The course owner is also a
+ * teacher and is flagged with `isOwner: true` so the UI can protect it from
+ * removal. Used by the "Manage Teachers" modal (`openTeacherManager()`).
+ *
+ * @param {string} courseId
+ * @return {{courseId:string, ownerId:string, teachers:Array<{userId,email,name,isOwner}>}}
+ */
+function getCourseTeachers(courseId) {
+  if (!courseId) throw new Error("Course ID required.");
+  try {
+    let ownerId = "";
+    try {
+      const course = Classroom.Courses.get(courseId);
+      ownerId = course && course.ownerId ? String(course.ownerId) : "";
+    } catch (e) {
+      // Owner detection is best-effort; absence only means the UI won't tag the owner.
+    }
+
+    const teachers = [];
+    let pageToken = null;
+    do {
+      const response = Classroom.Courses.Teachers.list(courseId, { pageSize: 100, pageToken: pageToken });
+      (response.teachers || []).forEach(t => {
+        const profile = t.profile || {};
+        const userId = String(t.userId || "");
+        teachers.push({
+          userId: userId,
+          email: (profile.emailAddress || "").toLowerCase(),
+          name: (profile.name && profile.name.fullName) || profile.emailAddress || userId,
+          isOwner: ownerId !== "" && userId === ownerId
+        });
+      });
+      pageToken = response.nextPageToken;
+    } while (pageToken);
+
+    // Owner first, then natural-sorted by name (shares the directory sort key).
+    teachers.sort(function (a, b) {
+      if (a.isOwner !== b.isOwner) return a.isOwner ? -1 : 1;
+      return buildUserSortKey_(a.name).localeCompare(buildUserSortKey_(b.name), "zh-Hant");
+    });
+
+    logSystemAction_("LIST_COURSE_TEACHERS", courseId, "SUCCESS", `Retrieved ${teachers.length} teachers`);
+    return { courseId: String(courseId), ownerId: ownerId, teachers: teachers };
+  } catch (err) {
+    logSystemAction_("LIST_COURSE_TEACHERS", courseId, "ERROR", err.message);
+    throw new Error("Failed to list teachers: " + getExceptionMessage_(err));
+  }
+}
+
+/**
+ * Adds and/or removes teachers on an existing course. Mirrors the partial-success
+ * contract of `applyEnrollmentChanges`. The course OWNER cannot be removed (the
+ * Classroom API forbids it) — any attempt is rejected and reported as an error
+ * rather than throwing, so the rest of the batch still applies.
+ *
+ * @param {string} courseId
+ * @param {string[]} toAdd     teacher emails to add
+ * @param {string[]} toRemove  teacher userIds (preferred) or emails to remove
+ * @return {{message:string, added:{success,errors}, removed:{success,errors}}}
+ */
+function updateCourseTeachers(courseId, toAdd, toRemove) {
+  if (!courseId) throw new Error("Course ID required.");
+
+  // Resolve the owner up front so we can protect it from removal.
+  let ownerId = "";
+  try {
+    const course = Classroom.Courses.get(courseId);
+    ownerId = course && course.ownerId ? String(course.ownerId) : "";
+  } catch (e) {
+    // Best-effort; if we cannot resolve the owner, the API itself still guards it.
+  }
+
+  const added = { success: [], errors: [] };
+  const removed = { success: [], errors: [] };
+
+  const addList = (toAdd || []).map(e => String(e).trim()).filter(Boolean);
+  const removeList = (toRemove || []).map(e => String(e).trim()).filter(Boolean);
+
+  addList.forEach(email => {
+    try {
+      Classroom.Courses.Teachers.create({ userId: email }, courseId);
+      added.success.push(email);
+    } catch (e) {
+      let msg = getExceptionMessage_(e);
+      if (msg.indexOf("ALREADY_EXISTS") !== -1) msg = "Already a teacher";
+      added.errors.push(`${email}: ${msg}`);
+    }
+  });
+
+  removeList.forEach(idOrEmail => {
+    if (ownerId && String(idOrEmail) === ownerId) {
+      removed.errors.push(`${idOrEmail}: Cannot remove the course owner.`);
+      return;
+    }
+    try {
+      Classroom.Courses.Teachers.remove(courseId, idOrEmail);
+      removed.success.push(idOrEmail);
+    } catch (e) {
+      let msg = getExceptionMessage_(e);
+      if (msg.indexOf("NOT_FOUND") !== -1) msg = "Not a teacher";
+      else if (msg.indexOf("FAILED_PRECONDITION") !== -1) msg = "Cannot remove the course owner.";
+      removed.errors.push(`${idOrEmail}: ${msg}`);
+    }
+  });
+
+  const errorCount = added.errors.length + removed.errors.length;
+  logSystemAction_("UPDATE_COURSE_TEACHERS", courseId, "COMPLETE",
+    `Added: ${added.success.length}, Removed: ${removed.success.length}, Errors: ${errorCount}`);
+
+  return {
+    message: `Added: ${added.success.length}, Removed: ${removed.success.length}` +
+      (errorCount > 0 ? ` (${errorCount} error(s))` : ''),
+    added,
     removed
   };
 }
