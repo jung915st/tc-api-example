@@ -1,14 +1,14 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.6.1
- * Updated: 2026-08-21 (Timezone UTC+8)
+ * Version: 2.6.2
+ * Updated: 2026-08-22 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Manage (add/remove) teachers per course, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
  * 3. Directory: Inactive User Detection, Suspend, Move OU
  * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
- * 5. Drive: Outdated File Auditing with paginated BFS recursive sub-directory scan + domain-wide shared drive sweep; results saved to Drive_Audit_Logs sheet with owner Gmail; Batch Delete/Archive with locale-independent 403 classification, Trash fallback, shared-drive domain-admin escalation, and optional delete-as-owner via domain-wide delegation
+ * 5. Drive: Outdated File Auditing with paginated BFS recursive sub-directory scan + domain-wide shared drive sweep (membership-403 auto-escalation with guaranteed release, per-drive coverage accounting); results saved to Drive_Audit_Logs sheet with owner Gmail; Batch Delete/Archive with locale-independent 403 classification, Trash fallback, shared-drive domain-admin escalation, and optional delete-as-owner via domain-wide delegation
  * 6. Email: Custom HTML notification sending with variable support ({name}, {email})
  * 7. Logging: Centralized logging to Spreadsheet (UTC+8); Drive audit snapshots persisted per run
  * * * REQUIRED SCOPES:
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.6.1";
+const APP_VERSION = "2.6.2";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -2113,35 +2113,64 @@ function findOutdatedFiles(dateString) {
     //     covers shared drives the admin is a MEMBER of; useDomainAdminAccess
     //     exposes every shared drive in the domain. Time-budgeted because a
     //     domain with many shared drives would otherwise blow the 6-min limit.
-    const sharedDriveScan = { scanned: 0, total: 0, truncated: false };
+    //
+    //     files.list is membership-gated (no useDomainAdminAccess parameter
+    //     exists on it), so a non-member drive returns 403 "The attempted
+    //     action requires shared drive membership." scanSharedDriveFiles_
+    //     takes a temporary organizer grant in that case; the finally block
+    //     below always hands it back.
+    const sharedDriveScan = {
+      total: 0, scanned: 0, escalated: 0, failed: 0,
+      truncated: false, failures: [], enumerationError: ""
+    };
     const knownIds = new Set(allItems.map(f => f.id));
-    const domainDrives = listDomainSharedDrives_();
-    sharedDriveScan.total = domainDrives.length;
-    const scanDeadline = new Date().getTime() + DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_SCAN_BUDGET_MS;
+    const escalation = createDriveEscalationContext_();
 
-    for (const drive of domainDrives) {
-      if (new Date().getTime() > scanDeadline) {
-        sharedDriveScan.truncated = true;
-        break;
-      }
-      sharedDriveScan.scanned++;
-      let driveItems = [];
-      try {
-        driveItems = fetchDriveFilesWithPagination_(
-          `modifiedTime < '${cutoff}' and trashed = false`,
-          BFS_PAGE_SIZE,
-          drive.id
-        );
-      } catch (e) {
-        console.error(`Shared drive scan failed for ${drive.id}`, e);
-        continue;
-      }
-      driveItems.forEach(item => {
-        if (!knownIds.has(item.id)) {
-          knownIds.add(item.id);
-          allItems.push(item);
+    try {
+      const enumeration = { error: "" };
+      const domainDrives = listDomainSharedDrives_(null, enumeration);
+      sharedDriveScan.enumerationError = enumeration.error;
+      sharedDriveScan.total = domainDrives.length;
+      const scanDeadline = new Date().getTime() + DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_SCAN_BUDGET_MS;
+
+      for (const drive of domainDrives) {
+        if (new Date().getTime() > scanDeadline) {
+          sharedDriveScan.truncated = true;
+          break;
         }
-      });
+
+        let scan;
+        try {
+          scan = scanSharedDriveFiles_(
+            drive.id,
+            `modifiedTime < '${cutoff}' and trashed = false`,
+            DRIVE_ESCALATION_CONFIG.MAX_ITEMS_PER_SHARED_DRIVE,
+            escalation
+          );
+        } catch (e) {
+          // A drive we could not read is a COVERAGE GAP, not a no-op. Count it
+          // so the run is reported PARTIAL instead of masquerading as complete.
+          sharedDriveScan.failed++;
+          if (sharedDriveScan.failures.length < 5) {
+            sharedDriveScan.failures.push(`${drive.name || drive.id}: ${getExceptionMessage_(e)}`);
+          }
+          console.error(`Shared drive scan failed for ${drive.id}`, e);
+          continue;
+        }
+
+        sharedDriveScan.scanned++;
+        if (scan.escalated) sharedDriveScan.escalated++;
+        scan.items.forEach(item => {
+          if (!knownIds.has(item.id)) {
+            knownIds.add(item.id);
+            allItems.push(item);
+          }
+        });
+      }
+    } finally {
+      // Never leave the admin holding organizer on drives they did not have it on.
+      releaseDriveEscalationContext_(escalation);
+      escalation.notes.forEach(note => console.warn(note));
     }
 
     // 2. BFS — always runs on every discovered folder regardless of how many items
@@ -2182,12 +2211,31 @@ function findOutdatedFiles(dateString) {
     // 5. Persist audit snapshot to spreadsheet
     appendDriveAuditLog_(resultItems, dateString);
 
-    // Cap visibility: never let a truncated sweep look like full coverage.
-    const scanNote = sharedDriveScan.total > 0
-      ? ` Domain shared drives scanned: ${sharedDriveScan.scanned}/${sharedDriveScan.total}${sharedDriveScan.truncated ? " (TRUNCATED — time budget reached)" : ""}.`
-      : "";
-    logSystemAction_("AUDIT_DRIVE", "Drive", sharedDriveScan.truncated ? "PARTIAL" : "SUCCESS",
-      `Found ${allItems.length} items (showing top ${resultItems.length}, cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.${scanNote}`);
+    // Cap visibility: never let a truncated or partially-failed sweep look like
+    // full coverage. A skipped drive is a coverage gap and must surface as PARTIAL.
+    const scanIncomplete = sharedDriveScan.truncated ||
+      sharedDriveScan.failed > 0 ||
+      !!sharedDriveScan.enumerationError;
+
+    let scanNote = "";
+    if (sharedDriveScan.total > 0) {
+      scanNote = ` Domain shared drives scanned: ${sharedDriveScan.scanned}/${sharedDriveScan.total}` +
+        (sharedDriveScan.escalated > 0 ? ` (escalated to organizer on ${sharedDriveScan.escalated})` : "") +
+        (sharedDriveScan.failed > 0 ? `, FAILED ${sharedDriveScan.failed}` : "") +
+        (sharedDriveScan.truncated ? ", TRUNCATED — time budget reached" : "") + ".";
+      if (sharedDriveScan.failures.length > 0) {
+        scanNote += ` Skipped drives: ${sharedDriveScan.failures.join(" | ")}`;
+      }
+    } else if (sharedDriveScan.enumerationError) {
+      scanNote = ` Domain shared drive enumeration FAILED: ${sharedDriveScan.enumerationError}` +
+        ` (sweep limited to drives the admin is already a member of).`;
+    }
+
+    logSystemAction_("AUDIT_DRIVE", "Drive", scanIncomplete ? "PARTIAL" : "SUCCESS",
+      truncateLogDetail_(
+        `Found ${allItems.length} items (showing top ${resultItems.length}, cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.${scanNote}`,
+        3500
+      ));
 
     // 6. Map to UI format (shape unchanged — no frontend changes required)
     return resultItems.map(f => ({
@@ -2209,7 +2257,12 @@ function findOutdatedFiles(dateString) {
  * Paginated Drive.Files.list wrapper. Follows nextPageToken until maxItems reached.
  * orderBy omitted — not supported with corpora='allDrives'.
  */
-function fetchDriveFilesWithPagination_(query, maxItems, sharedDriveId) {
+function fetchDriveFilesWithPagination_(query, maxItems, sharedDriveId, deps) {
+  const filesApi = (deps && deps.filesApi) || (Drive && Drive.Files ? Drive.Files : null);
+  if (!filesApi || typeof filesApi.list !== "function") {
+    throw new Error("Drive.Files API is unavailable.");
+  }
+
   const results = [];
   let pageToken = null;
   do {
@@ -2227,11 +2280,70 @@ function fetchDriveFilesWithPagination_(query, maxItems, sharedDriveId) {
       params.corpora = 'allDrives';
     }
     if (pageToken) params.pageToken = pageToken;
-    const response = Drive.Files.list(params);
+    const response = filesApi.list(params);
     results.push(...(response.files || []));
     pageToken = response.nextPageToken || null;
   } while (pageToken && results.length < maxItems);
   return results.slice(0, maxItems);
+}
+
+/**
+ * Lists files inside ONE shared drive, escalating if the admin is not a member.
+ *
+ * ROOT CAUSE THIS SOLVES (v2.6.1 production error):
+ *   `Drive.Drives.list({useDomainAdminAccess:true})` enumerates EVERY shared
+ *   drive in the domain, including ones the admin is not a member of. But Drive
+ *   v3 `files.list` has NO `useDomainAdminAccess` parameter — it is
+ *   membership-gated. So the enumeration succeeded and the very next call died
+ *   with:
+ *     403 "The attempted action requires shared drive membership."
+ *   The old code swallowed that into console.error + continue, so every
+ *   non-member drive was silently skipped while the audit still logged
+ *   "scanned N/N" as if coverage were complete.
+ *
+ * FIX: on a 403 we take the temporary `organizer` grant that Option A already
+ * implements for deletes (grantSelfSharedDriveOrganizer_), retry the listing,
+ * and let the caller's finally block hand the permission back via
+ * releaseDriveEscalationContext_. Membership propagation is not instantaneous,
+ * hence the bounded backoff retry.
+ *
+ * @return {{items: Array<Object>, escalated: boolean}}
+ * @throws when the drive is genuinely unreadable — the caller MUST count it as
+ *         a failure rather than pass it off as scanned.
+ */
+function scanSharedDriveFiles_(driveId, query, maxItems, ctx, deps) {
+  const sleepFn = (deps && deps.sleepFn) || function (ms) { Utilities.sleep(ms); };
+
+  try {
+    return { items: fetchDriveFilesWithPagination_(query, maxItems, driveId, deps), escalated: false };
+  } catch (firstError) {
+    if (!isSharedDriveAccessError_(firstError)) throw firstError;
+    if (!ctx) throw firstError;
+
+    // Bound the number of ACL mutations a single audit run may perform.
+    const alreadyGranted = ctx.grantedDrives.some(grant => grant.driveId === driveId);
+    if (!alreadyGranted &&
+        ctx.grantedDrives.length >= DRIVE_ESCALATION_CONFIG.MAX_SHARED_DRIVE_ESCALATIONS) {
+      throw new Error(
+        `共用雲端硬碟 ${driveId} 需要提權才能掃描，但本次已達提權上限 ` +
+        `${DRIVE_ESCALATION_CONFIG.MAX_SHARED_DRIVE_ESCALATIONS} 個雲端硬碟。`
+      );
+    }
+
+    grantSelfSharedDriveOrganizer_(driveId, ctx, deps);
+
+    let lastError = firstError;
+    for (let attempt = 1; attempt <= DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_GRANT_RETRIES; attempt++) {
+      sleepFn(DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_GRANT_PROPAGATION_MS * attempt);
+      try {
+        return { items: fetchDriveFilesWithPagination_(query, maxItems, driveId, deps), escalated: true };
+      } catch (retryError) {
+        lastError = retryError;
+        if (!isSharedDriveAccessError_(retryError)) throw retryError;
+      }
+    }
+    throw lastError;
+  }
 }
 
 /**
@@ -2582,6 +2694,44 @@ function isDriveNotFoundError_(err) {
     text.indexOf("找不到檔案") !== -1;
 }
 
+// Reasons Google returns when files.list is called against a shared drive the
+// caller is not a member of. Both spellings are accepted: the v3 API still
+// emits the legacy "teamDrive" wording in some code paths.
+const SHARED_DRIVE_MEMBERSHIP_REASONS = [
+  "shareddrivemembershiprequired",
+  "teamdrivemembershiprequired",
+  "insufficientfilepermissions",
+  "forbidden",
+  "permission_denied"
+];
+
+// Locale-tolerant fallbacks. Per the project rule, `.message` is only consulted
+// AFTER code/reason, because the GAS wrapper localizes it to the executing
+// user's account language.
+const SHARED_DRIVE_MEMBERSHIP_TEXT_PATTERNS = [
+  "shared drive membership",
+  "team drive membership",
+  "requires shared drive",
+  "共用雲端硬碟成員",
+  "需要共用雲端硬碟"
+];
+
+/**
+ * True when a shared-drive listing failed for an access reason that a temporary
+ * organizer grant can fix. Any 403 on this path qualifies: escalation is the
+ * only remedy available, it is bounded, and it is always released.
+ * A 404 / 429 / 500 must NOT qualify — escalating those would burn quota and
+ * mutate ACLs for nothing.
+ */
+function isSharedDriveAccessError_(err) {
+  const signature = getDriveErrorSignature_(err);
+  if (signature.code === 403) return true;
+  if (signature.code && signature.code !== 403) return false;
+  if (signature.reasons.some(reason => SHARED_DRIVE_MEMBERSHIP_REASONS.indexOf(reason) !== -1)) return true;
+  const text = signature.message.toLowerCase();
+  return SHARED_DRIVE_MEMBERSHIP_TEXT_PATTERNS.some(pattern => text.indexOf(pattern) !== -1);
+}
+
 function isMethodSignatureError_(err) {
   const text = getExceptionMessage_(err).toLowerCase();
   return text.indexOf("typeerror") !== -1 ||
@@ -2633,7 +2783,18 @@ const DRIVE_ESCALATION_CONFIG = {
   TOKEN_CACHE_TTL_SECONDS: 3000,
   FILES_ENDPOINT: "https://www.googleapis.com/drive/v3/files",
   SHARED_DRIVE_SCAN_BUDGET_MS: 90000,
-  MAX_SHARED_DRIVES_SCANNED: 200
+  MAX_SHARED_DRIVES_SCANNED: 200,
+  // Per-drive item cap for the audit sweep. Previously the BFS *page size*
+  // (100) was passed here, conflating "items per API page" with "items per
+  // drive" and silently capping every shared drive at 100 files.
+  MAX_ITEMS_PER_SHARED_DRIVE: 200,
+  // A shared-drive permission grant is not visible to files.list instantly.
+  SHARED_DRIVE_GRANT_PROPAGATION_MS: 2000,
+  SHARED_DRIVE_GRANT_RETRIES: 2,
+  // Hard ceiling on ACL mutations performed by a single audit run. Every grant
+  // is released afterwards, but an unbounded loop over a large domain would
+  // both blow the 6-minute limit and churn permissions needlessly.
+  MAX_SHARED_DRIVE_ESCALATIONS: 25
 };
 
 /**
@@ -2997,9 +3158,15 @@ function escalateDriveFileRemoval_(fileId, ctx, deps) {
  * ones the admin is not a member of — so the audit is not limited to the
  * admin's own memberships.
  */
-function listDomainSharedDrives_(deps) {
+function listDomainSharedDrives_(deps, outcome) {
+  const report = outcome && typeof outcome === "object" ? outcome : { error: "" };
+  report.error = "";
+
   const drivesApi = (deps && deps.drivesApi) || (Drive && Drive.Drives ? Drive.Drives : null);
-  if (!drivesApi || typeof drivesApi.list !== "function") return [];
+  if (!drivesApi || typeof drivesApi.list !== "function") {
+    report.error = "Drive.Drives advanced service is unavailable.";
+    return [];
+  }
 
   const drives = [];
   let pageToken = null;
@@ -3010,6 +3177,9 @@ function listDomainSharedDrives_(deps) {
     try {
       response = drivesApi.list(params);
     } catch (e) {
+      // Do not fail silently: a non-super-admin token lands here, and the caller
+      // must be able to tell "no shared drives" from "could not look".
+      report.error = getExceptionMessage_(e);
       console.error("Domain shared drive enumeration failed", e);
       break;
     }

@@ -47,6 +47,15 @@ function runBatchCourseUnitTests() {
     test_deleteDriveFileAsOwner_mapsHttpStatuses,
     test_normalizePrivateKey_unescapesNewlines,
     test_isSameDomainEmail_,
+    test_isSharedDriveAccessError_membership403,
+    test_isSharedDriveAccessError_ignoresNonPermissionFailures,
+    test_fetchDriveFilesWithPagination_usesDriveCorporaAndPaginates,
+    test_scanSharedDriveFiles_memberDriveNeedsNoEscalation,
+    test_scanSharedDriveFiles_membership403EscalatesThenLists,
+    test_scanSharedDriveFiles_doesNotEscalateNonPermissionErrors,
+    test_scanSharedDriveFiles_respectsEscalationCap,
+    test_scanSharedDriveFiles_rethrowsWhenGrantNeverPropagates,
+    test_listDomainSharedDrives_reportsEnumerationFailure,
     test_chineseNumeralToInt_basic,
     test_buildUserSortKey_ordersByClassThenNumber,
     test_buildUserSortKey_handlesMissingName
@@ -762,6 +771,253 @@ function extractContentIdsFromPayload_(payload) {
     ids.push(match[1]);
   }
   return ids;
+}
+
+/* =========================================
+   v2.6.2 — Shared drive audit sweep regression tests
+
+   Production error being pinned down (v2.6.1, findOutdatedFiles):
+     Shared drive scan failed for 0ANaIjkThat-yUk9PVA
+     GoogleJsonResponseException: drive.files.list API 呼叫失敗
+     (錯誤訊息：The attempted action requires shared drive membership.) code: 403
+
+   Drives.list({useDomainAdminAccess:true}) returns drives the admin is NOT a
+   member of, but files.list has no useDomainAdminAccess parameter and is
+   membership-gated. Every one of these tests injects fakes — no Script
+   Properties, no crypto, no live API.
+   ========================================= */
+
+function createSharedDriveMembershipError_() {
+  const err = new Error(
+    "drive.files.list API 呼叫失敗 (錯誤訊息：The attempted action requires shared drive membership.)"
+  );
+  err.name = "GoogleJsonResponseException";
+  err.details = {
+    message: "The attempted action requires shared drive membership.",
+    errors: [{
+      domain: "global",
+      reason: "sharedDriveMembershipRequired",
+      message: "The attempted action requires shared drive membership."
+    }],
+    code: 403
+  };
+  return err;
+}
+
+/** Escalation context literal — avoids Session/Script Properties in tests. */
+function createFakeAuditEscalationContext_() {
+  return {
+    adminEmail: "admin@example.edu",
+    delegationAvailable: false,
+    grantedDrives: [],
+    driveAdminDeletes: 0,
+    ownerDeletes: 0,
+    notes: []
+  };
+}
+
+function test_isSharedDriveAccessError_membership403() {
+  assertTrue_(
+    isSharedDriveAccessError_(createSharedDriveMembershipError_()),
+    "403 shared drive membership error must be classified as escalatable."
+  );
+
+  const reasonOnly = new Error("完全在地化訊息");
+  reasonOnly.details = { errors: [{ reason: "teamDriveMembershipRequired" }] };
+  assertTrue_(
+    isSharedDriveAccessError_(reasonOnly),
+    "Legacy teamDriveMembershipRequired reason must also be escalatable."
+  );
+}
+
+function test_isSharedDriveAccessError_ignoresNonPermissionFailures() {
+  assertFalse_(
+    isSharedDriveAccessError_(createDriveNotFoundError_()),
+    "404 must not trigger a permission escalation."
+  );
+
+  const rateLimit = new Error("Rate Limit Exceeded");
+  rateLimit.details = { code: 429, errors: [{ reason: "rateLimitExceeded" }] };
+  assertFalse_(isSharedDriveAccessError_(rateLimit), "429 must not trigger escalation.");
+
+  const serverError = new Error("Internal error");
+  serverError.details = { code: 500, errors: [] };
+  assertFalse_(isSharedDriveAccessError_(serverError), "500 must not trigger escalation.");
+}
+
+function test_fetchDriveFilesWithPagination_usesDriveCorporaAndPaginates() {
+  const seenParams = [];
+  const fakeFilesApi = {
+    list: function (params) {
+      seenParams.push(params);
+      if (seenParams.length === 1) {
+        return { files: [{ id: "f1" }, { id: "f2" }], nextPageToken: "page2" };
+      }
+      return { files: [{ id: "f3" }], nextPageToken: null };
+    }
+  };
+
+  const items = fetchDriveFilesWithPagination_("trashed = false", 10, "drive-1", { filesApi: fakeFilesApi });
+
+  assertEqual_(items.length, 3, "Pagination should follow nextPageToken and merge pages.");
+  assertEqual_(seenParams.length, 2, "Two pages should require two list calls.");
+  assertEqual_(seenParams[0].corpora, "drive", "A shared drive scan must use corpora='drive'.");
+  assertEqual_(seenParams[0].driveId, "drive-1", "driveId must be passed for a shared drive scan.");
+  assertTrue_(seenParams[0].supportsAllDrives === true, "supportsAllDrives must always be set.");
+  assertEqual_(seenParams[1].pageToken, "page2", "Second call must carry the page token.");
+  assertTrue_(
+    seenParams[0].useDomainAdminAccess === undefined,
+    "files.list has no useDomainAdminAccess parameter — sending it would be an Invalid Value error."
+  );
+}
+
+function test_scanSharedDriveFiles_memberDriveNeedsNoEscalation() {
+  let permissionCalls = 0;
+  const ctx = createFakeAuditEscalationContext_();
+  const deps = {
+    filesApi: { list: function () { return { files: [{ id: "f1" }], nextPageToken: null }; } },
+    permissionsApi: {
+      list: function () { permissionCalls++; return { permissions: [] }; },
+      create: function () { permissionCalls++; return { id: "p1" }; }
+    },
+    sleepFn: function () {}
+  };
+
+  const result = scanSharedDriveFiles_("drive-1", "trashed = false", 50, ctx, deps);
+
+  assertEqual_(result.items.length, 1, "A drive the admin can already read must return its files.");
+  assertFalse_(result.escalated, "No escalation should be reported for a readable drive.");
+  assertEqual_(permissionCalls, 0, "A readable drive must never have its ACL touched.");
+  assertEqual_(ctx.grantedDrives.length, 0, "No grant should be recorded for a readable drive.");
+}
+
+function test_scanSharedDriveFiles_membership403EscalatesThenLists() {
+  let listAttempts = 0;
+  let createdPermission = null;
+  let sleptMs = 0;
+  const ctx = createFakeAuditEscalationContext_();
+
+  const deps = {
+    filesApi: {
+      list: function () {
+        listAttempts++;
+        if (listAttempts === 1) throw createSharedDriveMembershipError_();
+        return { files: [{ id: "f1" }, { id: "f2" }], nextPageToken: null };
+      }
+    },
+    permissionsApi: {
+      list: function () { return { permissions: [] }; },
+      create: function (resource) { createdPermission = resource; return { id: "perm-1" }; }
+    },
+    sleepFn: function (ms) { sleptMs += ms; }
+  };
+
+  const result = scanSharedDriveFiles_("0ANaIjkThat-yUk9PVA", "trashed = false", 50, ctx, deps);
+
+  assertEqual_(listAttempts, 2, "The listing must be retried once the organizer grant is taken.");
+  assertEqual_(result.items.length, 2, "Files behind the membership wall must be returned after escalation.");
+  assertTrue_(result.escalated, "The result must flag that escalation was required.");
+  assertTrue_(createdPermission && createdPermission.role === "organizer", "Escalation must request the organizer role.");
+  assertEqual_(createdPermission.emailAddress, "admin@example.edu", "The grant must target the executing admin.");
+  assertTrue_(sleptMs > 0, "A propagation delay must be observed before retrying.");
+  assertEqual_(ctx.grantedDrives.length, 1, "The grant must be tracked so it can be released afterwards.");
+  assertTrue_(ctx.grantedDrives[0].created === true, "A newly created grant must be marked for removal on release.");
+}
+
+function test_scanSharedDriveFiles_doesNotEscalateNonPermissionErrors() {
+  let permissionCalls = 0;
+  const ctx = createFakeAuditEscalationContext_();
+  const deps = {
+    filesApi: { list: function () { throw createDriveNotFoundError_(); } },
+    permissionsApi: {
+      list: function () { permissionCalls++; return { permissions: [] }; },
+      create: function () { permissionCalls++; return { id: "p1" }; }
+    },
+    sleepFn: function () {}
+  };
+
+  assertThrows_(
+    function () { scanSharedDriveFiles_("drive-1", "trashed = false", 50, ctx, deps); },
+    "",
+    "A 404 must propagate to the caller so it is counted as a coverage gap."
+  );
+  assertEqual_(permissionCalls, 0, "A 404 must never mutate a shared drive ACL.");
+}
+
+function test_scanSharedDriveFiles_respectsEscalationCap() {
+  const ctx = createFakeAuditEscalationContext_();
+  for (let i = 0; i < DRIVE_ESCALATION_CONFIG.MAX_SHARED_DRIVE_ESCALATIONS; i++) {
+    ctx.grantedDrives.push({ driveId: `already-${i}`, permissionId: `p${i}`, created: true });
+  }
+
+  let permissionCalls = 0;
+  const deps = {
+    filesApi: { list: function () { throw createSharedDriveMembershipError_(); } },
+    permissionsApi: {
+      list: function () { permissionCalls++; return { permissions: [] }; },
+      create: function () { permissionCalls++; return { id: "p" }; }
+    },
+    sleepFn: function () {}
+  };
+
+  assertThrows_(
+    function () { scanSharedDriveFiles_("drive-new", "trashed = false", 50, ctx, deps); },
+    "提權上限",
+    "Exceeding the escalation cap must fail loudly instead of silently skipping."
+  );
+  assertEqual_(permissionCalls, 0, "No further ACL mutation may happen once the cap is reached.");
+}
+
+function test_scanSharedDriveFiles_rethrowsWhenGrantNeverPropagates() {
+  let listAttempts = 0;
+  const ctx = createFakeAuditEscalationContext_();
+  const deps = {
+    filesApi: {
+      list: function () { listAttempts++; throw createSharedDriveMembershipError_(); }
+    },
+    permissionsApi: {
+      list: function () { return { permissions: [] }; },
+      create: function () { return { id: "perm-1" }; }
+    },
+    sleepFn: function () {}
+  };
+
+  assertThrows_(
+    function () { scanSharedDriveFiles_("drive-1", "trashed = false", 50, ctx, deps); },
+    "",
+    "A drive that stays unreadable after escalation must throw, not report empty coverage."
+  );
+  assertEqual_(
+    listAttempts,
+    1 + DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_GRANT_RETRIES,
+    "Retries must be bounded by SHARED_DRIVE_GRANT_RETRIES."
+  );
+  assertEqual_(ctx.grantedDrives.length, 1, "The failed grant must still be tracked so release can clean it up.");
+}
+
+function test_listDomainSharedDrives_reportsEnumerationFailure() {
+  const outcome = { error: "" };
+  const drives = listDomainSharedDrives_({
+    drivesApi: {
+      list: function () {
+        const err = new Error("Domain administrator access denied.");
+        err.details = { code: 403, errors: [{ reason: "forbidden" }] };
+        throw err;
+      }
+    }
+  }, outcome);
+
+  assertEqual_(drives.length, 0, "A failed enumeration returns no drives.");
+  assertTrue_(outcome.error.length > 0, "Enumeration failure must be reported, not swallowed silently.");
+
+  const okOutcome = { error: "" };
+  const okDrives = listDomainSharedDrives_({
+    drivesApi: {
+      list: function () { return { drives: [{ id: "d1", name: "Staff" }], nextPageToken: null }; }
+    }
+  }, okOutcome);
+  assertEqual_(okDrives.length, 1, "A successful enumeration returns its drives.");
+  assertEqual_(okOutcome.error, "", "A successful enumeration must not report an error.");
 }
 
 function test_chineseNumeralToInt_basic() {
