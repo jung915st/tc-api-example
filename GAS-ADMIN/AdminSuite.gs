@@ -1,6 +1,6 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.6.0
+ * Version: 2.6.1
  * Updated: 2026-08-21 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.6.0";
+const APP_VERSION = "2.6.1";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -2738,8 +2738,13 @@ function base64UrlEncodeBytes_(bytes) {
   return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, "");
 }
 
-/** RS256-signed JWT bearer assertion (RFC 7523) with `sub` = impersonated user. */
-function buildServiceAccountJwt_(creds, subject, nowSeconds) {
+/**
+ * RS256-signed JWT bearer assertion (RFC 7523) with `sub` = impersonated user.
+ * `signFn` is injectable so unit tests can assert the claim set without holding
+ * a real RSA private key.
+ */
+function buildServiceAccountJwt_(creds, subject, nowSeconds, signFn) {
+  const sign = signFn || function(input, key) { return Utilities.computeRsaSha256Signature(input, key); };
   const issuedAt = Math.floor(nowSeconds);
   const header = { alg: "RS256", typ: "JWT" };
   const claim = {
@@ -2751,8 +2756,7 @@ function buildServiceAccountJwt_(creds, subject, nowSeconds) {
     exp: issuedAt + DRIVE_ESCALATION_CONFIG.TOKEN_LIFETIME_SECONDS
   };
   const signingInput = `${base64UrlEncode_(JSON.stringify(header))}.${base64UrlEncode_(JSON.stringify(claim))}`;
-  const signature = Utilities.computeRsaSha256Signature(signingInput, creds.key);
-  return `${signingInput}.${base64UrlEncodeBytes_(signature)}`;
+  return `${signingInput}.${base64UrlEncodeBytes_(sign(signingInput, creds.key))}`;
 }
 
 function getScriptCacheSafe_() {
@@ -2768,11 +2772,14 @@ function getScriptCacheSafe_() {
  * matters: a cleanup batch usually targets many files owned by the same few
  * users, and an uncached token exchange per file would burn the 6-minute limit.
  */
-function fetchImpersonatedAccessToken_(subject, fetchFn) {
-  const creds = getDriveDelegationCredentials_();
+function fetchImpersonatedAccessToken_(subject, deps) {
+  const options = deps || {};
+  const fetchFn = options.fetchFn;
+  const creds = options.creds || getDriveDelegationCredentials_();
   if (!creds) throw new Error("尚未設定 Drive 委派服務帳戶（請先執行 setDriveDelegationCredentials）。");
 
-  const cache = getScriptCacheSafe_();
+  // Injected creds mean a test seam — never touch the shared script cache there.
+  const cache = options.creds ? null : getScriptCacheSafe_();
   const cacheKey = DRIVE_ESCALATION_CONFIG.TOKEN_CACHE_PREFIX +
     Utilities.base64EncodeWebSafe(String(subject)).replace(/=+$/, "");
   if (cache) {
@@ -2780,7 +2787,7 @@ function fetchImpersonatedAccessToken_(subject, fetchFn) {
     if (cached) return cached;
   }
 
-  const assertion = buildServiceAccountJwt_(creds, subject, new Date().getTime() / 1000);
+  const assertion = buildServiceAccountJwt_(creds, subject, new Date().getTime() / 1000, options.signFn);
   const doFetch = fetchFn || function(url, params) { return UrlFetchApp.fetch(url, params); };
   const response = doFetch(DRIVE_ESCALATION_CONFIG.TOKEN_ENDPOINT, {
     method: "post",
@@ -2805,9 +2812,10 @@ function fetchImpersonatedAccessToken_(subject, fetchFn) {
 }
 
 /** Option B1 executor: permanent delete performed as the file's own owner. */
-function deleteDriveFileAsOwner_(fileId, ownerEmail, fetchFn) {
-  const token = fetchImpersonatedAccessToken_(ownerEmail, fetchFn);
-  const doFetch = fetchFn || function(url, params) { return UrlFetchApp.fetch(url, params); };
+function deleteDriveFileAsOwner_(fileId, ownerEmail, deps) {
+  const options = deps || {};
+  const token = fetchImpersonatedAccessToken_(ownerEmail, options);
+  const doFetch = options.fetchFn || function(url, params) { return UrlFetchApp.fetch(url, params); };
   const response = doFetch(
     `${DRIVE_ESCALATION_CONFIG.FILES_ENDPOINT}/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
     { method: "delete", headers: { Authorization: `Bearer ${token}` }, muteHttpExceptions: true }
@@ -2979,7 +2987,7 @@ function escalateDriveFileRemoval_(fileId, ctx, deps) {
     return { mode: "NO_ACCESS", message: `檔案擁有者 ${ownerEmail} 不屬於本網域，全網域委派無法模擬外部帳號。` };
   }
 
-  const result = deleteDriveFileAsOwner_(fileId, ownerEmail, deps && deps.fetchFn);
+  const result = deleteDriveFileAsOwner_(fileId, ownerEmail, deps);
   if (result.mode === "DELETED_AS_OWNER") ctx.ownerDeletes++;
   return result;
 }

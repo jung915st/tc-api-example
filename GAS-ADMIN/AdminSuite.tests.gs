@@ -550,6 +550,23 @@ function createSimpleHttpResponse_(code, body) {
   };
 }
 
+/**
+ * Injected service-account credentials + signer. Unit tests must never read the
+ * real Script Properties (an unconfigured project would fail the suite) and must
+ * never call Utilities.computeRsaSha256Signature (it needs a genuine RSA PEM and
+ * throws "Invalid argument: key" otherwise).
+ */
+function createFakeDelegationDeps_(extra) {
+  const deps = {
+    creds: { email: "sa@proj.iam.gserviceaccount.com", key: "TEST-KEY-NOT-A-REAL-PEM" },
+    signFn: function(signingInput) {
+      return Utilities.newBlob(`sig(${signingInput.length})`).getBytes();
+    }
+  };
+  Object.keys(extra || {}).forEach(k => { deps[k] = extra[k]; });
+  return deps;
+}
+
 function test_escalation_sharedDriveTakesOrganizerThenDeletes() {
   let deleteAttempts = 0;
   let createdRole = "";
@@ -621,7 +638,7 @@ function test_escalation_leavesPreExistingOrganizerAlone() {
 function test_escalation_myDriveUsesOwnerImpersonation() {
   let tokenSubject = "";
   let deletedUrl = "";
-  const deps = {
+  const deps = createFakeDelegationDeps_({
     filesApi: {
       get: function() {
         return { id: "f2", name: "Report.pdf", driveId: null, owners: [{ emailAddress: "teacher@school.edu" }] };
@@ -639,7 +656,7 @@ function test_escalation_myDriveUsesOwnerImpersonation() {
       assertEqual_(params.headers.Authorization, "Bearer tok-123", "Delete must use the impersonated token.");
       return createSimpleHttpResponse_(204, "");
     }
-  };
+  });
   const ctx = createEscalationContext_({ delegationAvailable: true });
   const result = escalateDriveFileRemoval_("f2", ctx, deps);
 
@@ -667,12 +684,12 @@ function test_escalation_myDriveWithoutDelegationReportsRemedy() {
 
 function test_escalation_refusesExternalDomainOwner() {
   let fetchCalled = 0;
-  const deps = {
+  const deps = createFakeDelegationDeps_({
     filesApi: {
       get: function() { return { id: "f4", driveId: null, owners: [{ emailAddress: "outsider@other.com" }] }; }
     },
     fetchFn: function() { fetchCalled++; return createSimpleHttpResponse_(200, "{}"); }
-  };
+  });
   const ctx = createEscalationContext_({ delegationAvailable: true });
   const result = escalateDriveFileRemoval_("f4", ctx, deps);
 
@@ -681,11 +698,8 @@ function test_escalation_refusesExternalDomainOwner() {
 }
 
 function test_buildServiceAccountJwt_shapeAndClaims() {
-  const jwt = buildServiceAccountJwt_(
-    { email: "sa@proj.iam.gserviceaccount.com", key: "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----" },
-    "teacher@school.edu",
-    1700000000
-  );
+  const fake = createFakeDelegationDeps_();
+  const jwt = buildServiceAccountJwt_(fake.creds, "teacher@school.edu", 1700000000, fake.signFn);
   const segments = jwt.split(".");
   assertEqual_(segments.length, 3, "A JWT must have three dot-separated segments.");
   assertFalse_(jwt.indexOf("=") !== -1, "Base64url segments must not carry '=' padding.");
@@ -700,12 +714,14 @@ function test_buildServiceAccountJwt_shapeAndClaims() {
 }
 
 function test_deleteDriveFileAsOwner_mapsHttpStatuses() {
-  const respond = code => function(url, params) {
-    if (url.indexOf("oauth2.googleapis.com") !== -1) {
-      return createSimpleHttpResponse_(200, JSON.stringify({ access_token: "t" }));
+  const respond = code => createFakeDelegationDeps_({
+    fetchFn: function(url) {
+      if (url.indexOf("oauth2.googleapis.com") !== -1) {
+        return createSimpleHttpResponse_(200, JSON.stringify({ access_token: "t" }));
+      }
+      return createSimpleHttpResponse_(code, JSON.stringify({ error: { message: "boom" } }));
     }
-    return createSimpleHttpResponse_(code, JSON.stringify({ error: { message: "boom" } }));
-  };
+  });
 
   assertEqual_(deleteDriveFileAsOwner_("f", "u@school.edu", respond(204)).mode, "DELETED_AS_OWNER", "204 -> deleted.");
   assertEqual_(deleteDriveFileAsOwner_("f", "u@school.edu", respond(404)).mode, "ALREADY_GONE", "404 -> already gone.");
