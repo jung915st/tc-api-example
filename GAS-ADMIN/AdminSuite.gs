@@ -1,14 +1,14 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.5.0
- * Updated: 2026-06-30 (Timezone UTC+8)
+ * Version: 2.6.0
+ * Updated: 2026-08-21 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Manage (add/remove) teachers per course, Roster Students via OU, Batch Create (CSV/TSV)
  * 2. Groups: Batch Create Groups (CSV/TSV), Multi-group Member Assignment via OU selector
  * 3. Directory: Inactive User Detection, Suspend, Move OU
  * 4. Lifecycle: Automated deletion of suspended accounts after 3 months
- * 5. Drive: Outdated File Auditing with paginated BFS recursive sub-directory scan; results saved to Drive_Audit_Logs sheet with owner Gmail; Batch Delete/Archive with Trash fallback
+ * 5. Drive: Outdated File Auditing with paginated BFS recursive sub-directory scan + domain-wide shared drive sweep; results saved to Drive_Audit_Logs sheet with owner Gmail; Batch Delete/Archive with locale-independent 403 classification, Trash fallback, shared-drive domain-admin escalation, and optional delete-as-owner via domain-wide delegation
  * 6. Email: Custom HTML notification sending with variable support ({name}, {email})
  * 7. Logging: Centralized logging to Spreadsheet (UTC+8); Drive audit snapshots persisted per run
  * * * REQUIRED SCOPES:
@@ -26,7 +26,7 @@
  * @include https://www.googleapis.com/auth/gmail.send
  */
 
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.6.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -2109,6 +2109,41 @@ function findOutdatedFiles(dateString) {
       MAX_TOTAL
     );
 
+    // 1b. Domain-wide shared drive sweep (Option A). corpora='allDrives' only
+    //     covers shared drives the admin is a MEMBER of; useDomainAdminAccess
+    //     exposes every shared drive in the domain. Time-budgeted because a
+    //     domain with many shared drives would otherwise blow the 6-min limit.
+    const sharedDriveScan = { scanned: 0, total: 0, truncated: false };
+    const knownIds = new Set(allItems.map(f => f.id));
+    const domainDrives = listDomainSharedDrives_();
+    sharedDriveScan.total = domainDrives.length;
+    const scanDeadline = new Date().getTime() + DRIVE_ESCALATION_CONFIG.SHARED_DRIVE_SCAN_BUDGET_MS;
+
+    for (const drive of domainDrives) {
+      if (new Date().getTime() > scanDeadline) {
+        sharedDriveScan.truncated = true;
+        break;
+      }
+      sharedDriveScan.scanned++;
+      let driveItems = [];
+      try {
+        driveItems = fetchDriveFilesWithPagination_(
+          `modifiedTime < '${cutoff}' and trashed = false`,
+          BFS_PAGE_SIZE,
+          drive.id
+        );
+      } catch (e) {
+        console.error(`Shared drive scan failed for ${drive.id}`, e);
+        continue;
+      }
+      driveItems.forEach(item => {
+        if (!knownIds.has(item.id)) {
+          knownIds.add(item.id);
+          allItems.push(item);
+        }
+      });
+    }
+
     // 2. BFS — always runs on every discovered folder regardless of how many items
     //    the initial search already found. BFS expands up to MAX_BFS_ITEMS total
     //    so it cannot be starved when the initial search fills MAX_TOTAL.
@@ -2147,8 +2182,12 @@ function findOutdatedFiles(dateString) {
     // 5. Persist audit snapshot to spreadsheet
     appendDriveAuditLog_(resultItems, dateString);
 
-    logSystemAction_("AUDIT_DRIVE", "Drive", "SUCCESS",
-      `Found ${allItems.length} items (showing top ${resultItems.length}, cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.`);
+    // Cap visibility: never let a truncated sweep look like full coverage.
+    const scanNote = sharedDriveScan.total > 0
+      ? ` Domain shared drives scanned: ${sharedDriveScan.scanned}/${sharedDriveScan.total}${sharedDriveScan.truncated ? " (TRUNCATED — time budget reached)" : ""}.`
+      : "";
+    logSystemAction_("AUDIT_DRIVE", "Drive", sharedDriveScan.truncated ? "PARTIAL" : "SUCCESS",
+      `Found ${allItems.length} items (showing top ${resultItems.length}, cutoff: ${dateString}). Saved to ${CONFIG.SHEET_NAME_DRIVE_AUDIT}.${scanNote}`);
 
     // 6. Map to UI format (shape unchanged — no frontend changes required)
     return resultItems.map(f => ({
@@ -2237,66 +2276,119 @@ function appendDriveAuditLog_(items, cutoffDate) {
  * * Uses Drive API v3 (update)
  */
 function manageFiles(fileIds, action) {
-  let count = 0;
-  let deleteCount = 0;
-  let trashedFallbackCount = 0;
-  const errors = [];
-  fileIds.forEach(id => {
-    try {
-      if (action === 'delete') {
-        const outcome = removeDriveFileWithCompatibility_(id);
-        if (outcome.mode === "TRASHED") {
-          trashedFallbackCount++;
-        } else {
-          deleteCount++;
-        }
-      } else if (action === 'archive') {
-        // v3 uses 'update' for partial updates and 'name' for renaming
-        const file = Drive.Files.get(id, { supportsAllDrives: true, fields: "id,name" });
-        Drive.Files.update({ name: '[ARCHIVED]_' + file.name }, id, { supportsAllDrives: true });
-      }
-      count++;
-    } catch (e) {
-      errors.push(`${id}: ${e.message}`);
-      console.error(`Error processing ${id}:`, e);
-    }
-  });
-  
-  const verb = action === 'delete' ? 'Deleted' : 'Archived';
-  const hasFallbackTrash = action === 'delete' && trashedFallbackCount > 0;
-  const status = errors.length === 0
-    ? (hasFallbackTrash ? "PARTIAL" : "SUCCESS")
-    : (count > 0 ? "PARTIAL" : "FAILED");
-  const fallbackText = hasFallbackTrash
-    ? `; Trashed fallback: ${trashedFallbackCount} (shared drive permanent delete requires organizer role on a parent folder)`
-    : "";
-  const errorPreview = errors.length > 0 ? `; Errors: ${errors.slice(0, 5).join(" | ")}` : "";
-  if (action === 'delete') {
-    logSystemAction_(
-      "MANAGE_FILES",
-      "Batch",
-      status,
-      truncateLogDetail_(`Deleted ${deleteCount}/${fileIds.length} files${fallbackText}${errorPreview}`, 3500)
-    );
-  } else {
-    logSystemAction_(
-      "MANAGE_FILES",
-      "Batch",
-      status,
-      truncateLogDetail_(`${verb} ${count}/${fileIds.length} files${errorPreview}`, 3500)
-    );
+  const ids = Array.isArray(fileIds) ? fileIds.filter(id => id) : [];
+  if (ids.length === 0) throw new Error("未選取任何檔案。");
+  if (action !== 'delete' && action !== 'archive') {
+    throw new Error(`不支援的操作：${action}`);
   }
 
-  if (errors.length === 0 && !hasFallbackTrash) {
-    return `Successfully ${verb.toLowerCase()} ${count} items.`;
+  const tally = { deleted: 0, driveAdmin: 0, asOwner: 0, trashed: 0, alreadyGone: 0, noAccess: 0, archived: 0 };
+  const errors = [];
+  const notes = [];
+  const escalation = action === 'delete' ? createDriveEscalationContext_() : null;
+
+  try {
+    ids.forEach(id => {
+      try {
+        if (action === 'delete') {
+          let outcome = removeDriveFileWithCompatibility_(id);
+          // Only a reader-only denial is worth escalating; every other mode is final.
+          if (outcome.mode === "NO_ACCESS") {
+            try {
+              outcome = escalateDriveFileRemoval_(id, escalation);
+            } catch (escalationError) {
+              outcome = { mode: "NO_ACCESS", message: `提權刪除失敗：${getExceptionMessage_(escalationError)}` };
+            }
+          }
+
+          if (outcome.mode === "DELETED_AS_DRIVE_ADMIN") {
+            tally.driveAdmin++;
+          } else if (outcome.mode === "DELETED_AS_OWNER") {
+            tally.asOwner++;
+          } else if (outcome.mode === "TRASHED") {
+            tally.trashed++;
+          } else if (outcome.mode === "ALREADY_GONE") {
+            tally.alreadyGone++;
+          } else if (outcome.mode === "NO_ACCESS") {
+            tally.noAccess++;
+          } else {
+            tally.deleted++;
+          }
+          if (outcome.message && notes.indexOf(outcome.message) === -1) notes.push(outcome.message);
+        } else {
+          archiveDriveFileWithCompatibility_(id);
+          tally.archived++;
+        }
+      } catch (e) {
+        errors.push(`${id}: ${getExceptionMessage_(e)}`);
+        console.error(`Error processing ${id}:`, e);
+      }
+    });
+  } finally {
+    // Always give back temporary shared-drive elevation, even if the loop threw.
+    if (escalation) {
+      releaseDriveEscalationContext_(escalation);
+      escalation.notes.forEach(note => {
+        if (notes.indexOf(note) === -1) notes.push(note);
+      });
+    }
   }
-  if (action === 'delete') {
-    const base = `Deleted ${deleteCount} item(s).`;
-    const fallbackNote = hasFallbackTrash ? ` Moved ${trashedFallbackCount} item(s) to trash due to delete permission limits (shared drive organizer required for permanent delete).` : "";
-    const errorNote = errors.length > 0 ? ` Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}` : "";
-    return `${base}${fallbackNote}${errorNote}`.trim();
+
+  const succeeded = action === 'delete'
+    ? tally.deleted + tally.driveAdmin + tally.asOwner + tally.trashed + tally.alreadyGone
+    : tally.archived;
+  const blocked = errors.length + tally.noAccess;
+  const status = blocked === 0 ? "SUCCESS" : (succeeded > 0 ? "PARTIAL" : "FAILED");
+
+  const parts = action === 'delete'
+    ? [
+        `永久刪除 ${tally.deleted}`,
+        `以雲端硬碟管理員刪除 ${tally.driveAdmin}`,
+        `以擁有者身分刪除 ${tally.asOwner}`,
+        `改移垃圾桶 ${tally.trashed}`,
+        `已不存在 ${tally.alreadyGone}`,
+        `權限不足略過 ${tally.noAccess}`,
+        `失敗 ${errors.length}`
+      ]
+    : [`已封存 ${tally.archived}`, `失敗 ${errors.length}`];
+
+  const headline = `${action === 'delete' ? '刪除' : '封存'} ${succeeded}/${ids.length} 個項目（${parts.join('、')}）。`;
+  const noteText = notes.length > 0 ? ` 說明：${notes.join(' ')}` : "";
+  const errorPreview = errors.length > 0 ? ` 錯誤：${errors.slice(0, 5).join(" | ")}` : "";
+
+  logSystemAction_(
+    "MANAGE_FILES",
+    "Batch",
+    status,
+    truncateLogDetail_(`${headline}${noteText}${errorPreview}`, 3500)
+  );
+
+  const uiErrors = errors.length > 0 ? `\n失敗明細（前 3 筆）：\n${errors.slice(0, 3).join("\n")}` : "";
+  return `${headline}${noteText ? `\n${noteText.trim()}` : ""}${uiErrors}`;
+}
+
+/**
+ * Renames a file with the [ARCHIVED]_ prefix.
+ * Advanced Drive v3 signature is update(resource, fileId, mediaData, optionalArgs) —
+ * passing optionalArgs in the 3rd slot silently binds it to mediaData and drops
+ * supportsAllDrives, which breaks Shared Drive items. Both signatures are probed.
+ */
+function archiveDriveFileWithCompatibility_(fileId, filesApi) {
+  const api = filesApi || (Drive && Drive.Files ? Drive.Files : null);
+  if (!api) throw new Error("Drive.Files API is unavailable.");
+
+  const file = api.get(fileId, { supportsAllDrives: true, fields: "id,name" });
+  const currentName = String((file && file.name) || "");
+  if (currentName.indexOf("[ARCHIVED]_") === 0) return { mode: "ALREADY_ARCHIVED" };
+  const resource = { name: `[ARCHIVED]_${currentName}` };
+
+  try {
+    api.update(resource, fileId, null, { supportsAllDrives: true, fields: "id,name" });
+  } catch (e) {
+    if (!isMethodSignatureError_(e)) throw e;
+    api.update(resource, fileId, { supportsAllDrives: true, fields: "id,name" });
   }
-  return `${verb} ${count} items. Failed ${errors.length} item(s). ${errors.slice(0, 3).join(" | ")}`;
+  return { mode: "ARCHIVED" };
 }
 
 function removeDriveFileWithCompatibility_(fileId, filesApi) {
@@ -2305,20 +2397,29 @@ function removeDriveFileWithCompatibility_(fileId, filesApi) {
 
   try {
     deleteDriveFilePermanently_(api, fileId);
-    return { mode: "DELETED" };
+    return { mode: "DELETED", message: "" };
   } catch (deleteError) {
+    if (isDriveNotFoundError_(deleteError)) {
+      return { mode: "ALREADY_GONE", message: "檔案已不存在（可能已被刪除）。" };
+    }
     if (!isDeletePermissionError_(deleteError)) {
       throw deleteError;
     }
 
     try {
       trashDriveFileWithCompatibility_(api, fileId);
-      return {
-        mode: "TRASHED",
-        message: buildDeletePermissionNote_(deleteError)
-      };
+      return { mode: "TRASHED", message: buildDeletePermissionNote_(deleteError) };
     } catch (trashError) {
-      throw new Error(`${buildDeletePermissionNote_(deleteError)} Trash fallback failed: ${getExceptionMessage_(trashError)}`);
+      if (isDriveNotFoundError_(trashError)) {
+        return { mode: "ALREADY_GONE", message: "檔案已不存在（可能已被刪除）。" };
+      }
+      // Both permanent delete AND trash were denied: the executing admin only has
+      // read access to this file. This is a Drive ACL fact, not a transient bug —
+      // report it as a skip with an actionable remedy instead of a hard error.
+      if (isDeletePermissionError_(trashError)) {
+        return { mode: "NO_ACCESS", message: buildNoAccessNote_() };
+      }
+      throw new Error(`${buildDeletePermissionNote_(deleteError)} 移至垃圾桶亦失敗：${getExceptionMessage_(trashError)}`);
     }
   }
 }
@@ -2383,14 +2484,102 @@ function trashDriveFileWithCompatibility_(api, fileId) {
   throw new Error("Drive.Files.update/trash is not available in this runtime.");
 }
 
+/**
+ * Normalizes any Drive/Google API exception into { code, reasons[], message }.
+ *
+ * Why this exists: the Advanced Drive Service throws a GoogleJsonResponseException
+ * whose `.message` is LOCALIZED by the executing user's Google account language,
+ * e.g. "drive.files.delete API 呼叫失敗 (錯誤訊息：The user does not have sufficient
+ * permissions for this file.)". The HTTP status (403) and the machine-readable
+ * reason ("insufficientFilePermissions") live on `.details`, never in `.message`.
+ * Classifying on message text alone is therefore locale-dependent and unreliable.
+ */
+function getDriveErrorSignature_(err) {
+  const signature = { code: 0, reasons: [], message: getExceptionMessage_(err) };
+  if (!err || typeof err !== "object") {
+    signature.code = parseStatusCodeFromError_(err);
+    return signature;
+  }
+
+  const sources = [];
+  if (err.details && typeof err.details === "object") sources.push(err.details);
+  const parsed = safeJsonParse_(signature.message);
+  if (parsed && typeof parsed === "object") {
+    sources.push(parsed.error && typeof parsed.error === "object" ? parsed.error : parsed);
+  }
+
+  sources.forEach(source => {
+    const code = Number(source.code);
+    if (!signature.code && code >= 400 && code < 600) signature.code = code;
+    if (typeof source.status === "string" && source.status) {
+      signature.reasons.push(source.status.toLowerCase());
+    }
+    const items = Array.isArray(source.errors) ? source.errors : [];
+    items.forEach(item => {
+      if (!item || typeof item !== "object") return;
+      if (item.reason) signature.reasons.push(String(item.reason).toLowerCase());
+      if (item.message && signature.message.indexOf(item.message) === -1) {
+        signature.message += ` | ${item.message}`;
+      }
+    });
+    if (source.message && signature.message.indexOf(source.message) === -1) {
+      signature.message += ` | ${source.message}`;
+    }
+  });
+
+  if (!signature.code) signature.code = parseStatusCodeFromError_(signature.message);
+  return signature;
+}
+
+const DRIVE_PERMISSION_REASONS = [
+  "insufficientfilepermissions",
+  "insufficientparentpermissions",
+  "forbidden",
+  "cannotdelete",
+  "cannotdeletefile",
+  "cannottrashfile",
+  "cannotmodifyrestrictedfile",
+  "cannotremoveowner",
+  "domainpolicy",
+  "permission_denied"
+];
+
+// Locale-tolerant text fallbacks. "sufficient permissions" intentionally covers
+// BOTH "insufficient permissions" and "does not have sufficient permissions".
+const DRIVE_PERMISSION_TEXT_PATTERNS = [
+  "insufficientfilepermissions",
+  "sufficient permission",
+  "permission denied",
+  "permission_denied",
+  "forbidden",
+  "cannotdelete",
+  "organizer",
+  "not have permission",
+  "沒有足夠的權限",
+  "權限不足",
+  "沒有權限"
+];
+
 function isDeletePermissionError_(err) {
-  const text = getExceptionMessage_(err).toLowerCase();
-  return text.indexOf("insufficientfilepermissions") !== -1 ||
-    text.indexOf("insufficient permissions") !== -1 ||
-    text.indexOf("forbidden") !== -1 ||
-    text.indexOf("cannotdelete") !== -1 ||
-    text.indexOf("organizer") !== -1 ||
-    text.indexOf("403") !== -1;
+  const signature = getDriveErrorSignature_(err);
+  if (signature.code === 403) return true;
+  if (signature.reasons.some(reason => DRIVE_PERMISSION_REASONS.indexOf(reason) !== -1)) return true;
+  const text = signature.message.toLowerCase();
+  return DRIVE_PERMISSION_TEXT_PATTERNS.some(pattern => text.indexOf(pattern) !== -1);
+}
+
+/**
+ * 404 / already-deleted. Treated as an idempotent success so re-running a batch
+ * over a stale audit list does not report phantom failures.
+ */
+function isDriveNotFoundError_(err) {
+  const signature = getDriveErrorSignature_(err);
+  if (signature.code === 404) return true;
+  if (signature.reasons.indexOf("notfound") !== -1) return true;
+  const text = signature.message.toLowerCase();
+  return text.indexOf("file not found") !== -1 ||
+    text.indexOf("notfound") !== -1 ||
+    text.indexOf("找不到檔案") !== -1;
 }
 
 function isMethodSignatureError_(err) {
@@ -2404,7 +2593,423 @@ function isMethodSignatureError_(err) {
 
 function buildDeletePermissionNote_(deleteError) {
   const errorText = getExceptionMessage_(deleteError);
-  return `Permanent delete denied (${errorText}). For shared drive items, organizer role on a parent folder is required.`;
+  return `永久刪除遭拒（${errorText}）；共用雲端硬碟項目需要上層資料夾的「管理員 (organizer)」角色，個人雲端硬碟檔案則需為擁有者。`;
+}
+
+function buildNoAccessNote_() {
+  return "永久刪除與移至垃圾桶皆遭拒：目前帳號對此檔案只有「檢視者」權限。" +
+    "Google Workspace 超級管理員預設不會取得他人檔案的寫入權；" +
+    "請先於管理控制台使用「雲端硬碟擁有權轉移」把檔案轉給管理帳號，或請原擁有者自行刪除。";
+}
+
+/* =========================================
+   FEATURE 5b: DRIVE DELETE ESCALATION
+   Two independent escalation paths, tried only after the normal
+   delete -> trash chain has returned NO_ACCESS:
+
+   Option A — Shared Drive items. `useDomainAdminAccess: true` lets a super
+     admin manage permissions on ANY shared drive in the domain, including
+     ones they are not a member of. We temporarily take the `organizer` role,
+     delete, then restore the previous state (see releaseDriveEscalationContext_).
+     Requires nothing beyond the existing auth/drive scope.
+
+   Option B1 — My Drive items owned by another domain user. Ownership CANNOT
+     be transferred by an admin token (the API requires the current owner to
+     authorize it), so instead we mint a service-account access token that
+     impersonates the owner via domain-wide delegation and delete as them.
+     Deleting as the owner is deliberately preferred over transferring
+     ownership first: a transfer would move the file's storage quota onto the
+     admin account before deletion, which can exhaust the admin's quota on a
+     large cleanup, and costs twice the API calls for no benefit.
+   ========================================= */
+
+const DRIVE_ESCALATION_CONFIG = {
+  PROP_SA_EMAIL: "DWD_SERVICE_ACCOUNT_EMAIL",
+  PROP_SA_KEY: "DWD_PRIVATE_KEY",
+  TOKEN_SCOPE: "https://www.googleapis.com/auth/drive",
+  TOKEN_ENDPOINT: "https://oauth2.googleapis.com/token",
+  TOKEN_LIFETIME_SECONDS: 3600,
+  TOKEN_CACHE_PREFIX: "dwdtok_",
+  TOKEN_CACHE_TTL_SECONDS: 3000,
+  FILES_ENDPOINT: "https://www.googleapis.com/drive/v3/files",
+  SHARED_DRIVE_SCAN_BUDGET_MS: 90000,
+  MAX_SHARED_DRIVES_SCANNED: 200
+};
+
+/**
+ * Editor-only setup. Stores the service account credentials used for Option B1.
+ * Accepts EITHER (clientEmail, privateKey) OR the full service account JSON key
+ * file contents as a single argument.
+ *
+ * SECURITY: the stored key can delete any Drive file in the domain on behalf of
+ * any domain user. Script Properties are readable by anyone with edit access to
+ * this Apps Script project — keep project sharing restricted to the admin.
+ */
+function setDriveDelegationCredentials(clientEmailOrJson, privateKey) {
+  let email = String(clientEmailOrJson || "").trim();
+  let key = String(privateKey || "");
+
+  const parsed = safeJsonParse_(clientEmailOrJson);
+  if (parsed && parsed.client_email && parsed.private_key) {
+    email = String(parsed.client_email).trim();
+    key = String(parsed.private_key);
+  }
+
+  if (!email || email.indexOf("@") === -1) {
+    throw new Error("需要服務帳戶的 client_email，或直接把整份 JSON 金鑰檔內容當作單一參數傳入。");
+  }
+  key = normalizePrivateKey_(key);
+  if (key.indexOf("-----BEGIN") !== 0) {
+    throw new Error("private_key 必須是以 -----BEGIN PRIVATE KEY----- 開頭的 PEM 區塊。");
+  }
+
+  const props = {};
+  props[DRIVE_ESCALATION_CONFIG.PROP_SA_EMAIL] = email;
+  props[DRIVE_ESCALATION_CONFIG.PROP_SA_KEY] = key;
+  PropertiesService.getScriptProperties().setProperties(props);
+
+  logSystemAction_("DWD_CONFIG", email, "SUCCESS", "Drive delegation credentials stored.");
+  return `已設定 Drive 委派服務帳戶：${email}。請至管理控制台 > 安全性 > API 控制 > 全網域委派，` +
+    `以該服務帳戶的用戶端 ID 授權範圍 ${DRIVE_ESCALATION_CONFIG.TOKEN_SCOPE}，然後執行 testDriveDelegation("某位使用者@你的網域") 驗證。`;
+}
+
+function clearDriveDelegationCredentials() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(DRIVE_ESCALATION_CONFIG.PROP_SA_EMAIL);
+  props.deleteProperty(DRIVE_ESCALATION_CONFIG.PROP_SA_KEY);
+  logSystemAction_("DWD_CONFIG", "-", "SUCCESS", "Drive delegation credentials cleared.");
+  return "已清除 Drive 委派服務帳戶設定。My Drive 檔案將回到僅回報「權限不足略過」。";
+}
+
+/** Safe status probe — never returns key material. */
+function getDriveDelegationStatus() {
+  const creds = getDriveDelegationCredentials_();
+  return {
+    configured: !!creds,
+    serviceAccountEmail: creds ? creds.email : "",
+    scope: DRIVE_ESCALATION_CONFIG.TOKEN_SCOPE
+  };
+}
+
+/** Editor-only smoke test: proves the DWD grant works before relying on it. */
+function testDriveDelegation(impersonatedEmail) {
+  const subject = String(impersonatedEmail || "").trim();
+  if (!subject || subject.indexOf("@") === -1) {
+    throw new Error('請提供要模擬的網域使用者信箱，例如 testDriveDelegation("user@your-domain.edu")。');
+  }
+  const token = fetchImpersonatedAccessToken_(subject);
+  const response = UrlFetchApp.fetch(
+    `${DRIVE_ESCALATION_CONFIG.FILES_ENDPOINT}?pageSize=1&fields=files(id)&supportsAllDrives=true`,
+    { method: "get", headers: { Authorization: `Bearer ${token}` }, muteHttpExceptions: true }
+  );
+  const code = response.getResponseCode();
+  if (code !== 200) {
+    const detail = extractApiErrorMessage_(safeJsonParse_(response.getContentText()), response.getContentText());
+    throw new Error(`委派驗證失敗（HTTP ${code}）：${detail}`);
+  }
+  return `委派驗證成功：已能以 ${subject} 的身分呼叫 Drive API。`;
+}
+
+function getDriveDelegationCredentials_() {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const email = props.getProperty(DRIVE_ESCALATION_CONFIG.PROP_SA_EMAIL);
+    const key = props.getProperty(DRIVE_ESCALATION_CONFIG.PROP_SA_KEY);
+    if (!email || !key) return null;
+    return { email: email, key: key };
+  } catch (e) {
+    return null;
+  }
+}
+
+function isDriveDelegationConfigured_() {
+  return !!getDriveDelegationCredentials_();
+}
+
+function normalizePrivateKey_(key) {
+  return String(key || "").replace(/\\n/g, "\n").replace(/\r\n/g, "\n").trim();
+}
+
+function base64UrlEncode_(text) {
+  return Utilities.base64EncodeWebSafe(text, Utilities.Charset.UTF_8).replace(/=+$/, "");
+}
+
+function base64UrlEncodeBytes_(bytes) {
+  return Utilities.base64EncodeWebSafe(bytes).replace(/=+$/, "");
+}
+
+/** RS256-signed JWT bearer assertion (RFC 7523) with `sub` = impersonated user. */
+function buildServiceAccountJwt_(creds, subject, nowSeconds) {
+  const issuedAt = Math.floor(nowSeconds);
+  const header = { alg: "RS256", typ: "JWT" };
+  const claim = {
+    iss: creds.email,
+    sub: subject,
+    scope: DRIVE_ESCALATION_CONFIG.TOKEN_SCOPE,
+    aud: DRIVE_ESCALATION_CONFIG.TOKEN_ENDPOINT,
+    iat: issuedAt,
+    exp: issuedAt + DRIVE_ESCALATION_CONFIG.TOKEN_LIFETIME_SECONDS
+  };
+  const signingInput = `${base64UrlEncode_(JSON.stringify(header))}.${base64UrlEncode_(JSON.stringify(claim))}`;
+  const signature = Utilities.computeRsaSha256Signature(signingInput, creds.key);
+  return `${signingInput}.${base64UrlEncodeBytes_(signature)}`;
+}
+
+function getScriptCacheSafe_() {
+  try {
+    return CacheService.getScriptCache();
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Mints (and caches) an impersonated access token. Caching is per-subject and
+ * matters: a cleanup batch usually targets many files owned by the same few
+ * users, and an uncached token exchange per file would burn the 6-minute limit.
+ */
+function fetchImpersonatedAccessToken_(subject, fetchFn) {
+  const creds = getDriveDelegationCredentials_();
+  if (!creds) throw new Error("尚未設定 Drive 委派服務帳戶（請先執行 setDriveDelegationCredentials）。");
+
+  const cache = getScriptCacheSafe_();
+  const cacheKey = DRIVE_ESCALATION_CONFIG.TOKEN_CACHE_PREFIX +
+    Utilities.base64EncodeWebSafe(String(subject)).replace(/=+$/, "");
+  if (cache) {
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+  }
+
+  const assertion = buildServiceAccountJwt_(creds, subject, new Date().getTime() / 1000);
+  const doFetch = fetchFn || function(url, params) { return UrlFetchApp.fetch(url, params); };
+  const response = doFetch(DRIVE_ESCALATION_CONFIG.TOKEN_ENDPOINT, {
+    method: "post",
+    contentType: "application/x-www-form-urlencoded",
+    payload: {
+      grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+      assertion: assertion
+    },
+    muteHttpExceptions: true
+  });
+
+  const body = response.getContentText();
+  const parsed = safeJsonParse_(body);
+  if (response.getResponseCode() !== 200 || !parsed || !parsed.access_token) {
+    const detail = (parsed && (parsed.error_description || parsed.error)) || String(body).substring(0, 300);
+    throw new Error(`無法取得 ${subject} 的委派存取權杖：${detail}（請確認全網域委派已授權 ${DRIVE_ESCALATION_CONFIG.TOKEN_SCOPE}）。`);
+  }
+  if (cache) {
+    cache.put(cacheKey, parsed.access_token, DRIVE_ESCALATION_CONFIG.TOKEN_CACHE_TTL_SECONDS);
+  }
+  return parsed.access_token;
+}
+
+/** Option B1 executor: permanent delete performed as the file's own owner. */
+function deleteDriveFileAsOwner_(fileId, ownerEmail, fetchFn) {
+  const token = fetchImpersonatedAccessToken_(ownerEmail, fetchFn);
+  const doFetch = fetchFn || function(url, params) { return UrlFetchApp.fetch(url, params); };
+  const response = doFetch(
+    `${DRIVE_ESCALATION_CONFIG.FILES_ENDPOINT}/${encodeURIComponent(fileId)}?supportsAllDrives=true`,
+    { method: "delete", headers: { Authorization: `Bearer ${token}` }, muteHttpExceptions: true }
+  );
+
+  const code = response.getResponseCode();
+  if (code === 204 || code === 200) return { mode: "DELETED_AS_OWNER", message: "" };
+  if (code === 404) return { mode: "ALREADY_GONE", message: "檔案已不存在（可能已被刪除）。" };
+
+  const body = response.getContentText();
+  const detail = extractApiErrorMessage_(safeJsonParse_(body), body);
+  if (code === 403) {
+    return { mode: "NO_ACCESS", message: `已模擬擁有者 ${ownerEmail} 但仍遭拒（403）：${detail}` };
+  }
+  throw new Error(`以擁有者 ${ownerEmail} 身分刪除失敗（HTTP ${code}）：${detail}`);
+}
+
+function getEffectiveAdminEmail_() {
+  try {
+    return Session.getEffectiveUser().getEmail() || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function isSameDomainEmail_(a, b) {
+  const domainA = String(a || "").split("@")[1];
+  const domainB = String(b || "").split("@")[1];
+  return !!domainA && !!domainB && domainA.toLowerCase() === domainB.toLowerCase();
+}
+
+function createDriveEscalationContext_() {
+  return {
+    adminEmail: getEffectiveAdminEmail_(),
+    delegationAvailable: isDriveDelegationConfigured_(),
+    grantedDrives: [],
+    driveAdminDeletes: 0,
+    ownerDeletes: 0,
+    notes: []
+  };
+}
+
+/**
+ * Option A: take `organizer` on a shared drive via domain admin access.
+ * The pre-existing permission is inspected first so that
+ * releaseDriveEscalationContext_ can restore — never widen — the admin's
+ * standing access once the batch finishes.
+ */
+function grantSelfSharedDriveOrganizer_(driveId, ctx, deps) {
+  if (ctx.grantedDrives.some(grant => grant.driveId === driveId)) return;
+
+  const permissionsApi = (deps && deps.permissionsApi) || (Drive && Drive.Permissions ? Drive.Permissions : null);
+  if (!permissionsApi) throw new Error("Drive.Permissions API is unavailable.");
+  if (!ctx.adminEmail) throw new Error("無法取得目前執行帳號的信箱，無法進行共用雲端硬碟提權。");
+
+  const adminKey = ctx.adminEmail.toLowerCase();
+  let mine = null;
+  try {
+    const listed = permissionsApi.list(driveId, {
+      useDomainAdminAccess: true,
+      supportsAllDrives: true,
+      fields: "permissions(id,role,type,emailAddress)"
+    });
+    mine = (listed.permissions || []).filter(p => p.emailAddress &&
+      String(p.emailAddress).toLowerCase() === adminKey)[0] || null;
+  } catch (e) {
+    mine = null; // fall through to create; a duplicate create is safer than skipping
+  }
+
+  if (mine && mine.role === "organizer") {
+    ctx.grantedDrives.push({ driveId: driveId, permissionId: mine.id, preExisting: true });
+    return;
+  }
+
+  if (mine) {
+    permissionsApi.update({ role: "organizer" }, driveId, mine.id, {
+      useDomainAdminAccess: true,
+      supportsAllDrives: true,
+      fields: "id"
+    });
+    ctx.grantedDrives.push({ driveId: driveId, permissionId: mine.id, previousRole: mine.role });
+    return;
+  }
+
+  const created = permissionsApi.create(
+    { role: "organizer", type: "user", emailAddress: ctx.adminEmail },
+    driveId,
+    {
+      useDomainAdminAccess: true,
+      supportsAllDrives: true,
+      sendNotificationEmail: false,
+      fields: "id"
+    }
+  );
+  ctx.grantedDrives.push({ driveId: driveId, permissionId: created && created.id ? created.id : "", created: true });
+}
+
+/** Restores every temporary shared-drive elevation taken during the batch. */
+function releaseDriveEscalationContext_(ctx, deps) {
+  const permissionsApi = (deps && deps.permissionsApi) || (Drive && Drive.Permissions ? Drive.Permissions : null);
+  if (!permissionsApi || !ctx || !ctx.grantedDrives.length) return;
+
+  ctx.grantedDrives.forEach(grant => {
+    if (grant.preExisting || !grant.permissionId) return;
+    try {
+      if (grant.created) {
+        permissionsApi.remove(grant.driveId, grant.permissionId, {
+          useDomainAdminAccess: true,
+          supportsAllDrives: true
+        });
+      } else if (grant.previousRole) {
+        permissionsApi.update({ role: grant.previousRole }, grant.driveId, grant.permissionId, {
+          useDomainAdminAccess: true,
+          supportsAllDrives: true,
+          fields: "id"
+        });
+      }
+    } catch (e) {
+      ctx.notes.push(`共用雲端硬碟 ${grant.driveId} 的臨時管理員權限未能自動還原：${getExceptionMessage_(e)}`);
+    }
+  });
+}
+
+/**
+ * Escalation entry point. Called only when the normal chain returned NO_ACCESS.
+ * Returns the same outcome shape as removeDriveFileWithCompatibility_.
+ */
+function escalateDriveFileRemoval_(fileId, ctx, deps) {
+  const filesApi = (deps && deps.filesApi) || (Drive && Drive.Files ? Drive.Files : null);
+  if (!filesApi) return { mode: "NO_ACCESS", message: buildNoAccessNote_() };
+
+  let meta;
+  try {
+    meta = filesApi.get(fileId, {
+      supportsAllDrives: true,
+      fields: "id,name,driveId,owners(emailAddress)"
+    });
+  } catch (e) {
+    return { mode: "NO_ACCESS", message: `無法讀取檔案中繼資料，略過提權：${getExceptionMessage_(e)}` };
+  }
+
+  // --- Option A: shared drive item ---
+  if (meta && meta.driveId) {
+    try {
+      grantSelfSharedDriveOrganizer_(meta.driveId, ctx, deps);
+    } catch (grantError) {
+      return { mode: "NO_ACCESS", message: `共用雲端硬碟提權失敗：${getExceptionMessage_(grantError)}` };
+    }
+    const retry = removeDriveFileWithCompatibility_(fileId, filesApi);
+    if (retry.mode === "DELETED") {
+      ctx.driveAdminDeletes++;
+      return { mode: "DELETED_AS_DRIVE_ADMIN", message: "" };
+    }
+    return retry;
+  }
+
+  // --- Option B1: My Drive item owned by another domain user ---
+  const ownerEmail = (meta && meta.owners && meta.owners.length > 0) ? meta.owners[0].emailAddress : "";
+  if (!ownerEmail) {
+    return { mode: "NO_ACCESS", message: buildNoAccessNote_() };
+  }
+  if (!ctx.delegationAvailable) {
+    return {
+      mode: "NO_ACCESS",
+      message: `${buildNoAccessNote_()} 或設定全網域委派服務帳戶（setDriveDelegationCredentials），即可直接以擁有者身分刪除。`
+    };
+  }
+  if (!isSameDomainEmail_(ownerEmail, ctx.adminEmail)) {
+    return { mode: "NO_ACCESS", message: `檔案擁有者 ${ownerEmail} 不屬於本網域，全網域委派無法模擬外部帳號。` };
+  }
+
+  const result = deleteDriveFileAsOwner_(fileId, ownerEmail, deps && deps.fetchFn);
+  if (result.mode === "DELETED_AS_OWNER") ctx.ownerDeletes++;
+  return result;
+}
+
+/**
+ * Option A, audit side: enumerates every shared drive in the domain — including
+ * ones the admin is not a member of — so the audit is not limited to the
+ * admin's own memberships.
+ */
+function listDomainSharedDrives_(deps) {
+  const drivesApi = (deps && deps.drivesApi) || (Drive && Drive.Drives ? Drive.Drives : null);
+  if (!drivesApi || typeof drivesApi.list !== "function") return [];
+
+  const drives = [];
+  let pageToken = null;
+  do {
+    const params = { useDomainAdminAccess: true, pageSize: 100, fields: "nextPageToken,drives(id,name)" };
+    if (pageToken) params.pageToken = pageToken;
+    let response;
+    try {
+      response = drivesApi.list(params);
+    } catch (e) {
+      console.error("Domain shared drive enumeration failed", e);
+      break;
+    }
+    drives.push(...(response.drives || []));
+    pageToken = response.nextPageToken || null;
+  } while (pageToken && drives.length < DRIVE_ESCALATION_CONFIG.MAX_SHARED_DRIVES_SCANNED);
+
+  return drives.slice(0, DRIVE_ESCALATION_CONFIG.MAX_SHARED_DRIVES_SCANNED);
 }
 
 function getExceptionMessage_(err) {

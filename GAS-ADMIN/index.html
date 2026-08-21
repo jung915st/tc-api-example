@@ -569,6 +569,8 @@
           </button>
         </div>
 
+        <div id="driveActionResult" class="alert alert-info mb-2 d-none"></div>
+
         <div class="card">
           <div class="card-body p-0 table-scroll">
             <table class="table table-striped mb-0 table-sm">
@@ -1648,18 +1650,18 @@
           return;
         }
 
-        files.forEach(f => {
+        tbody.innerHTML = files.map(f => {
           const icon = f.isFolder ? '<i class="bi bi-folder-fill text-warning"></i>' : '<i class="bi bi-file-earmark-text"></i>';
-          tbody.innerHTML += `
+          return `
             <tr>
-              <td><input type="checkbox" class="file-check" value="${f.id}"></td>
-              <td>${icon} <a href="${f.link}" target="_blank" class="text-decoration-none">${f.name}</a></td>
-              <td><small>${f.owner}</small></td>
-              <td>${f.modified}</td>
-              <td>${f.size}</td>
+              <td><input type="checkbox" class="file-check" value="${escapeHtml(f.id)}"></td>
+              <td>${icon} <a href="${escapeHtml(f.link)}" target="_blank" rel="noopener" class="text-decoration-none">${escapeHtml(f.name)}</a></td>
+              <td><small>${escapeHtml(f.owner)}</small></td>
+              <td>${escapeHtml(f.modified)}</td>
+              <td>${escapeHtml(f.size)}</td>
               <td>${f.isFolder ? 'Folder' : 'File'}</td>
             </tr>`;
-        });
+        }).join('');
       }).withFailureHandler(err => {
         setLoader(false);
         alert("Audit Failed: " + err.message);
@@ -1670,21 +1672,33 @@
       const ids = getCheckedValues('.file-check');
       if (ids.length === 0) return alert("Please select files first.");
       
-      const confirmMsg = action === 'delete' 
-        ? `PERMANENTLY DELETE ${ids.length} items?` 
-        : `Archive (Rename) ${ids.length} items?`;
-        
+      const confirmMsg = action === 'delete'
+        ? `確定要永久刪除 ${ids.length} 個項目？\n\n權限不足時的自動處理順序：\n`
+          + `1. 改為「移至垃圾桶」\n`
+          + `2. 共用雲端硬碟項目：以網域管理員身分暫時取得「管理員」角色後刪除，批次結束後自動還原原本權限\n`
+          + `3. 個人雲端硬碟項目：若已設定全網域委派，改以「檔案擁有者」身分刪除\n`
+          + `4. 以上皆不可行者會被略過，並列在結果中`
+        : `確定要封存（重新命名為 [ARCHIVED]_）${ids.length} 個項目？`;
+
       if (!confirm(confirmMsg)) return;
 
-      setLoader(true, `${action === 'delete' ? 'Deleting' : 'Archiving'} items...`);
+      setLoader(true, `${action === 'delete' ? '刪除中' : '封存中'}...`);
       google.script.run.withSuccessHandler(msg => {
         setLoader(false);
-        alert(msg);
+        showDriveActionResult(msg, false);
         auditDrive(); // Refresh list
       }).withFailureHandler(err => {
         setLoader(false);
-        alert("Operation Failed: " + err.message);
+        showDriveActionResult(`操作失敗：${err.message}`, true);
       }).manageFiles(ids, action);
+    }
+
+    function showDriveActionResult(msg, isError) {
+      const box = document.getElementById('driveActionResult');
+      box.className = `alert ${isError ? 'alert-danger' : 'alert-info'} mb-2`;
+      box.style.whiteSpace = 'pre-wrap';
+      box.innerHTML = escapeHtml(String(msg || ''));
+      box.classList.remove('d-none');
     }
 
     function runConnectivityTest() {

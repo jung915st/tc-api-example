@@ -28,6 +28,25 @@ function runBatchCourseUnitTests() {
     test_removeDriveFileWithCompatibility_prefersDelete,
     test_removeDriveFileWithCompatibility_usesRemoveFallback,
     test_removeDriveFileWithCompatibility_permissionFallbackToTrash,
+    test_isDeletePermissionError_localizedGoogleJsonResponseException,
+    test_isDeletePermissionError_structuredCodeAndReason,
+    test_isDeletePermissionError_ignoresUnrelatedErrors,
+    test_isDriveNotFoundError_detects404,
+    test_removeDriveFileWithCompatibility_localized403FallsBackToTrash,
+    test_removeDriveFileWithCompatibility_readerOnlyReportsNoAccess,
+    test_removeDriveFileWithCompatibility_notFoundIsIdempotent,
+    test_archiveDriveFileWithCompatibility_usesFourArgUpdate,
+    test_archiveDriveFileWithCompatibility_legacySignatureFallback,
+    test_escalation_sharedDriveTakesOrganizerThenDeletes,
+    test_escalation_restoresPreviousRoleOnRelease,
+    test_escalation_leavesPreExistingOrganizerAlone,
+    test_escalation_myDriveUsesOwnerImpersonation,
+    test_escalation_myDriveWithoutDelegationReportsRemedy,
+    test_escalation_refusesExternalDomainOwner,
+    test_buildServiceAccountJwt_shapeAndClaims,
+    test_deleteDriveFileAsOwner_mapsHttpStatuses,
+    test_normalizePrivateKey_unescapesNewlines,
+    test_isSameDomainEmail_,
     test_chineseNumeralToInt_basic,
     test_buildUserSortKey_ordersByClassThenNumber,
     test_buildUserSortKey_handlesMissingName
@@ -375,6 +394,340 @@ function test_removeDriveFileWithCompatibility_permissionFallbackToTrash() {
   assertEqual_(deleteCalled, 1, "Delete should be attempted once.");
   assertEqual_(updateCalled, 1, "Trash fallback should call update(trashed=true).");
   assertEqual_(result.mode, "TRASHED", "Permission error should fallback to trash.");
+}
+
+/**
+ * Reproduces the exact exception observed in production Cloud Logs (v2.5.0):
+ * a GoogleJsonResponseException whose message is localized to zh-TW and whose
+ * only machine-readable 403 lives on `.details`.
+ */
+function createLocalizedDrivePermissionError_() {
+  const err = new Error(
+    "drive.files.delete API 呼叫失敗 (錯誤訊息：The user does not have sufficient permissions for this file.)"
+  );
+  err.name = "GoogleJsonResponseException";
+  err.details = {
+    message: "The user does not have sufficient permissions for this file.",
+    errors: [{ domain: "global", reason: "insufficientFilePermissions", message: "The user does not have sufficient permissions for this file." }],
+    code: 403
+  };
+  return err;
+}
+
+function createDriveNotFoundError_() {
+  const err = new Error("drive.files.delete API 呼叫失敗 (錯誤訊息：File not found: abc123.)");
+  err.name = "GoogleJsonResponseException";
+  err.details = {
+    message: "File not found: abc123.",
+    errors: [{ domain: "global", reason: "notFound", message: "File not found: abc123." }],
+    code: 404
+  };
+  return err;
+}
+
+function test_isDeletePermissionError_localizedGoogleJsonResponseException() {
+  assertTrue_(
+    isDeletePermissionError_(createLocalizedDrivePermissionError_()),
+    "Localized zh-TW 403 GoogleJsonResponseException must be classified as a permission error."
+  );
+}
+
+function test_isDeletePermissionError_structuredCodeAndReason() {
+  const codeOnly = new Error("完全在地化的訊息，沒有任何英文關鍵字。");
+  codeOnly.details = { code: 403, errors: [] };
+  assertTrue_(isDeletePermissionError_(codeOnly), "details.code 403 alone must classify as permission error.");
+
+  const reasonOnly = new Error("opaque failure");
+  reasonOnly.details = { errors: [{ reason: "cannotDelete" }] };
+  assertTrue_(isDeletePermissionError_(reasonOnly), "details.errors[].reason alone must classify as permission error.");
+}
+
+function test_isDeletePermissionError_ignoresUnrelatedErrors() {
+  const rateLimit = new Error("Rate Limit Exceeded");
+  rateLimit.details = { code: 429, errors: [{ reason: "rateLimitExceeded" }] };
+  assertFalse_(isDeletePermissionError_(rateLimit), "429 rate limit must NOT be treated as a permission error.");
+
+  const idWith403 = new Error("Error processing 1yGOvlC8xDRZk3nksIO403EVIH7W9Hmm6");
+  assertFalse_(
+    isDeletePermissionError_(idWith403),
+    "A file ID containing 403 must not be misread as an HTTP status."
+  );
+}
+
+function test_isDriveNotFoundError_detects404() {
+  assertTrue_(isDriveNotFoundError_(createDriveNotFoundError_()), "404 notFound must be detected.");
+  assertFalse_(isDriveNotFoundError_(createLocalizedDrivePermissionError_()), "403 must not be read as notFound.");
+}
+
+function test_removeDriveFileWithCompatibility_localized403FallsBackToTrash() {
+  let deleteCalled = 0;
+  let updateCalled = 0;
+  let updateArgCount = 0;
+  const fakeApi = {
+    delete: function() { deleteCalled++; throw createLocalizedDrivePermissionError_(); },
+    update: function() { updateCalled++; updateArgCount = arguments.length; }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(deleteCalled, 1, "Permanent delete should be attempted once.");
+  assertEqual_(updateCalled, 1, "Localized 403 must trigger the trash fallback.");
+  assertEqual_(updateArgCount, 4, "Trash fallback must use the 4-arg update signature.");
+  assertEqual_(result.mode, "TRASHED", "Localized 403 must resolve to TRASHED, not a thrown error.");
+}
+
+function test_removeDriveFileWithCompatibility_readerOnlyReportsNoAccess() {
+  const fakeApi = {
+    delete: function() { throw createLocalizedDrivePermissionError_(); },
+    update: function() { throw createLocalizedDrivePermissionError_(); }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(result.mode, "NO_ACCESS", "Reader-only access must report NO_ACCESS instead of throwing.");
+  assertTrue_(result.message.indexOf("檢視者") !== -1, "NO_ACCESS note should explain the reader-only cause.");
+}
+
+function test_removeDriveFileWithCompatibility_notFoundIsIdempotent() {
+  let updateCalled = 0;
+  const fakeApi = {
+    delete: function() { throw createDriveNotFoundError_(); },
+    update: function() { updateCalled++; }
+  };
+  const result = removeDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(result.mode, "ALREADY_GONE", "404 should be treated as already deleted.");
+  assertEqual_(updateCalled, 0, "404 must not trigger the trash fallback.");
+}
+
+function test_archiveDriveFileWithCompatibility_usesFourArgUpdate() {
+  let argCount = 0;
+  let newName = "";
+  let optionalArgs = null;
+  const fakeApi = {
+    get: function() { return { id: "abc123", name: "Old Report.pdf" }; },
+    update: function(resource, fileId, mediaData, opts) {
+      argCount = arguments.length;
+      newName = resource.name;
+      optionalArgs = opts;
+    }
+  };
+  archiveDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(argCount, 4, "Archive must call update with the 4-arg v3 signature.");
+  assertEqual_(newName, "[ARCHIVED]_Old Report.pdf", "Archive should prefix the existing name.");
+  assertTrue_(optionalArgs && optionalArgs.supportsAllDrives === true, "supportsAllDrives must reach optionalArgs, not mediaData.");
+}
+
+function test_archiveDriveFileWithCompatibility_legacySignatureFallback() {
+  let legacyCallArgCount = 0;
+  let attempts = 0;
+  const fakeApi = {
+    get: function() { return { id: "abc123", name: "Old.pdf" }; },
+    update: function() {
+      attempts++;
+      if (attempts === 1) throw new Error("Invalid number of arguments provided.");
+      legacyCallArgCount = arguments.length;
+    }
+  };
+  archiveDriveFileWithCompatibility_("abc123", fakeApi);
+  assertEqual_(attempts, 2, "Archive should retry once on a method-signature error.");
+  assertEqual_(legacyCallArgCount, 3, "Legacy fallback should use the 3-arg update signature.");
+}
+
+// --- Drive delete escalation (Option A shared drive / Option B1 delegation) ---
+
+function createEscalationContext_(overrides) {
+  const ctx = createDriveEscalationContext_();
+  ctx.adminEmail = "admin@school.edu";
+  ctx.delegationAvailable = false;
+  ctx.grantedDrives = [];
+  ctx.driveAdminDeletes = 0;
+  ctx.ownerDeletes = 0;
+  ctx.notes = [];
+  Object.keys(overrides || {}).forEach(k => { ctx[k] = overrides[k]; });
+  return ctx;
+}
+
+function createSimpleHttpResponse_(code, body) {
+  return {
+    getResponseCode: function() { return code; },
+    getContentText: function() { return body || ""; }
+  };
+}
+
+function test_escalation_sharedDriveTakesOrganizerThenDeletes() {
+  let deleteAttempts = 0;
+  let createdRole = "";
+  const deps = {
+    filesApi: {
+      get: function() { return { id: "f1", name: "Old.pdf", driveId: "drive-1", owners: [] }; },
+      // Denies the delete until the organizer grant has actually been made —
+      // this is what proves the escalation, not just the retry, is what works.
+      delete: function() {
+        deleteAttempts++;
+        if (createdRole !== "organizer") throw createLocalizedDrivePermissionError_();
+      }
+    },
+    permissionsApi: {
+      list: function() { return { permissions: [] }; },
+      create: function(resource) { createdRole = resource.role; return { id: "perm-9" }; },
+      update: function() { throw new Error("update should not be called"); },
+      remove: function() {}
+    }
+  };
+  const ctx = createEscalationContext_();
+  const result = escalateDriveFileRemoval_("f1", ctx, deps);
+
+  assertEqual_(createdRole, "organizer", "Escalation should grant the organizer role.");
+  assertEqual_(result.mode, "DELETED_AS_DRIVE_ADMIN", "Shared drive item should delete after escalation.");
+  assertEqual_(ctx.driveAdminDeletes, 1, "Drive-admin delete counter should increment.");
+  assertEqual_(ctx.grantedDrives.length, 1, "Grant should be tracked for later release.");
+  assertTrue_(ctx.grantedDrives[0].created === true, "Newly created grant must be flagged for removal.");
+}
+
+function test_escalation_restoresPreviousRoleOnRelease() {
+  let restoredRole = "";
+  let removeCalled = 0;
+  const deps = {
+    permissionsApi: {
+      update: function(resource) { restoredRole = resource.role; },
+      remove: function() { removeCalled++; }
+    }
+  };
+  const ctx = createEscalationContext_({
+    grantedDrives: [{ driveId: "drive-1", permissionId: "perm-3", previousRole: "fileOrganizer" }]
+  });
+  releaseDriveEscalationContext_(ctx, deps);
+
+  assertEqual_(restoredRole, "fileOrganizer", "Release must restore the admin's original lower role.");
+  assertEqual_(removeCalled, 0, "A pre-existing permission must never be deleted outright.");
+}
+
+function test_escalation_leavesPreExistingOrganizerAlone() {
+  let mutations = 0;
+  const deps = {
+    permissionsApi: {
+      list: function() {
+        return { permissions: [{ id: "perm-1", role: "organizer", type: "user", emailAddress: "admin@school.edu" }] };
+      },
+      create: function() { mutations++; return { id: "x" }; },
+      update: function() { mutations++; },
+      remove: function() { mutations++; }
+    }
+  };
+  const ctx = createEscalationContext_();
+  grantSelfSharedDriveOrganizer_("drive-1", ctx, deps);
+  releaseDriveEscalationContext_(ctx, deps);
+
+  assertEqual_(mutations, 0, "Existing organizer access must be neither re-granted nor revoked.");
+  assertTrue_(ctx.grantedDrives[0].preExisting === true, "Pre-existing access should be flagged.");
+}
+
+function test_escalation_myDriveUsesOwnerImpersonation() {
+  let tokenSubject = "";
+  let deletedUrl = "";
+  const deps = {
+    filesApi: {
+      get: function() {
+        return { id: "f2", name: "Report.pdf", driveId: null, owners: [{ emailAddress: "teacher@school.edu" }] };
+      }
+    },
+    fetchFn: function(url, params) {
+      if (url.indexOf("oauth2.googleapis.com") !== -1) {
+        const claim = JSON.parse(
+          Utilities.newBlob(Utilities.base64DecodeWebSafe(params.payload.assertion.split(".")[1])).getDataAsString()
+        );
+        tokenSubject = claim.sub;
+        return createSimpleHttpResponse_(200, JSON.stringify({ access_token: "tok-123" }));
+      }
+      deletedUrl = url;
+      assertEqual_(params.headers.Authorization, "Bearer tok-123", "Delete must use the impersonated token.");
+      return createSimpleHttpResponse_(204, "");
+    }
+  };
+  const ctx = createEscalationContext_({ delegationAvailable: true });
+  const result = escalateDriveFileRemoval_("f2", ctx, deps);
+
+  assertEqual_(tokenSubject, "teacher@school.edu", "JWT sub must be the file's owner, not the admin.");
+  assertTrue_(deletedUrl.indexOf("/files/f2") !== -1, "Delete should target the file id.");
+  assertEqual_(result.mode, "DELETED_AS_OWNER", "My Drive item should delete as its owner.");
+  assertEqual_(ctx.ownerDeletes, 1, "Owner-delete counter should increment.");
+}
+
+function test_escalation_myDriveWithoutDelegationReportsRemedy() {
+  const deps = {
+    filesApi: {
+      get: function() { return { id: "f3", driveId: null, owners: [{ emailAddress: "teacher@school.edu" }] }; }
+    }
+  };
+  const ctx = createEscalationContext_({ delegationAvailable: false });
+  const result = escalateDriveFileRemoval_("f3", ctx, deps);
+
+  assertEqual_(result.mode, "NO_ACCESS", "Without delegation the item stays un-deletable.");
+  assertTrue_(
+    result.message.indexOf("setDriveDelegationCredentials") !== -1,
+    "The remedy should name the setup function."
+  );
+}
+
+function test_escalation_refusesExternalDomainOwner() {
+  let fetchCalled = 0;
+  const deps = {
+    filesApi: {
+      get: function() { return { id: "f4", driveId: null, owners: [{ emailAddress: "outsider@other.com" }] }; }
+    },
+    fetchFn: function() { fetchCalled++; return createSimpleHttpResponse_(200, "{}"); }
+  };
+  const ctx = createEscalationContext_({ delegationAvailable: true });
+  const result = escalateDriveFileRemoval_("f4", ctx, deps);
+
+  assertEqual_(result.mode, "NO_ACCESS", "External-domain owners cannot be impersonated.");
+  assertEqual_(fetchCalled, 0, "No token should be minted for an out-of-domain subject.");
+}
+
+function test_buildServiceAccountJwt_shapeAndClaims() {
+  const jwt = buildServiceAccountJwt_(
+    { email: "sa@proj.iam.gserviceaccount.com", key: "-----BEGIN PRIVATE KEY-----\nfake\n-----END PRIVATE KEY-----" },
+    "teacher@school.edu",
+    1700000000
+  );
+  const segments = jwt.split(".");
+  assertEqual_(segments.length, 3, "A JWT must have three dot-separated segments.");
+  assertFalse_(jwt.indexOf("=") !== -1, "Base64url segments must not carry '=' padding.");
+
+  const header = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(segments[0])).getDataAsString());
+  const claim = JSON.parse(Utilities.newBlob(Utilities.base64DecodeWebSafe(segments[1])).getDataAsString());
+  assertEqual_(header.alg, "RS256", "Google requires RS256 for service account assertions.");
+  assertEqual_(claim.iss, "sa@proj.iam.gserviceaccount.com", "iss must be the service account.");
+  assertEqual_(claim.sub, "teacher@school.edu", "sub must be the impersonated user.");
+  assertEqual_(claim.aud, "https://oauth2.googleapis.com/token", "aud must be the token endpoint.");
+  assertEqual_(claim.exp - claim.iat, 3600, "Assertion lifetime must be one hour.");
+}
+
+function test_deleteDriveFileAsOwner_mapsHttpStatuses() {
+  const respond = code => function(url, params) {
+    if (url.indexOf("oauth2.googleapis.com") !== -1) {
+      return createSimpleHttpResponse_(200, JSON.stringify({ access_token: "t" }));
+    }
+    return createSimpleHttpResponse_(code, JSON.stringify({ error: { message: "boom" } }));
+  };
+
+  assertEqual_(deleteDriveFileAsOwner_("f", "u@school.edu", respond(204)).mode, "DELETED_AS_OWNER", "204 -> deleted.");
+  assertEqual_(deleteDriveFileAsOwner_("f", "u@school.edu", respond(404)).mode, "ALREADY_GONE", "404 -> already gone.");
+  assertEqual_(deleteDriveFileAsOwner_("f", "u@school.edu", respond(403)).mode, "NO_ACCESS", "403 -> no access.");
+  assertThrows_(
+    function() { deleteDriveFileAsOwner_("f", "u@school.edu", respond(500)); },
+    "HTTP 500",
+    "A 5xx should surface as a hard error, not a silent skip."
+  );
+}
+
+function test_normalizePrivateKey_unescapesNewlines() {
+  const escaped = "-----BEGIN PRIVATE KEY-----\\nABC\\n-----END PRIVATE KEY-----";
+  const normalized = normalizePrivateKey_(escaped);
+  assertTrue_(normalized.indexOf("\\n") === -1, "Literal \\n sequences must be converted to real newlines.");
+  assertTrue_(normalized.split("\n").length === 3, "Normalized PEM should span three lines.");
+}
+
+function test_isSameDomainEmail_() {
+  assertTrue_(isSameDomainEmail_("a@school.edu", "b@SCHOOL.edu"), "Domain compare should be case-insensitive.");
+  assertFalse_(isSameDomainEmail_("a@school.edu", "b@other.com"), "Different domains must not match.");
+  assertFalse_(isSameDomainEmail_("", "b@school.edu"), "Empty address must not match.");
 }
 
 function createFakeResponse_(statusCode, headers, body) {
