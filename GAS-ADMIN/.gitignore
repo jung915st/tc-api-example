@@ -6,5 +6,9 @@
 
 # Ignore all csv files
 *.csv
-*.claude/
+
+# Ignore claude files
+.claude/
+
+*.agents/
 
