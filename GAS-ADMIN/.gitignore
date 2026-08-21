@@ -1,2 +1,10 @@
+# Ignore all markdown files
 *.md
+
+# Ignore all text files
 *.txt
+
+# Ignore all csv files
+*.csv
+*.claude/
+
