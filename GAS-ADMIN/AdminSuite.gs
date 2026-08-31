@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.6.2
- * Updated: 2026-08-22 (Timezone UTC+8)
+ * Version: 2.7.0
+ * Updated: 2026-08-31 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Manage (add/remove) teachers per course, Roster Students via OU, Batch Create (CSV/TSV)
@@ -24,9 +24,15 @@
  * @include https://www.googleapis.com/auth/admin.directory.orgunit
  * @include https://www.googleapis.com/auth/drive
  * @include https://www.googleapis.com/auth/gmail.send
+ * 8. Directory Bulk Update (v2.7.0): CSV/TSV upload to set First/Last name, Org Unit and
+ *    suspend state across up to 600 accounts. Mandatory preview (dry-run) diff before apply;
+ *    rows already matching the directory are never rewritten. Passwords are never touched.
+ * 9. Classroom Roster Bulk Upload (v2.7.0): CSV/TSV enrolment by courseId or courseName+section.
+ * 10. Course Bulk Edit (v2.7.0): set-value or find-and-replace on name / section / description
+ *    across selected courses, with preview, via the Classroom multipart batch API.
  */
 
-const APP_VERSION = "2.6.2";
+const APP_VERSION = "2.7.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -94,6 +100,62 @@ const GROUP_BATCH_HEADER_ALIAS_LOOKUP = {
 };
 
 const GROUP_MEMBER_ALLOWED_ROLES = ["MEMBER", "MANAGER", "OWNER"];
+
+/* =========================================
+   BULK USER UPDATE (Directory) — v2.7.0
+   Config + header aliasing.
+   Deliberately has NO password column: these accounts authenticate through an
+   external SAML IdP, and update operations must never touch credentials.
+   ========================================= */
+
+const USER_BATCH_CONFIG = {
+  MAX_ROWS: 600,
+  CHUNK_SIZE: 30,
+  TIME_BUDGET_MS: 4.5 * 60 * 1000,
+  RETRY_DELAY_MS: 1200,
+  USERS_ENDPOINT: "https://admin.googleapis.com/admin/directory/v1/users/",
+  TEMPLATE_HEADERS: ["email", "firstName", "lastName", "orgUnitPath", "suspended"]
+};
+
+const USER_BATCH_REQUIRED_FIELDS = ["email"];
+
+const USER_BATCH_EDITABLE_FIELDS = ["firstName", "lastName", "orgUnitPath", "suspended"];
+
+/**
+ * Accepts our own short headers, common synonyms, and the exact column titles
+ * produced by the Google Admin console user export / bulk-update template so a
+ * file downloaded from Admin can be uploaded here unmodified.
+ */
+const USER_BATCH_HEADER_ALIAS_LOOKUP = {
+  email: "email",
+  emailaddress: "email",
+  "emailaddressrequired": "email",
+  primaryemail: "email",
+  useremail: "email",
+  account: "email",
+  firstname: "firstName",
+  "firstnamerequired": "firstName",
+  givenname: "firstName",
+  given: "firstName",
+  lastname: "lastName",
+  "lastnamerequired": "lastName",
+  familyname: "lastName",
+  surname: "lastName",
+  orgunitpath: "orgUnitPath",
+  "orgunitpathrequired": "orgUnitPath",
+  orgunit: "orgUnitPath",
+  ou: "orgUnitPath",
+  org: "orgUnitPath",
+  organizationalunit: "orgUnitPath",
+  suspended: "suspended",
+  status: "suspended",
+  newstatus: "suspended",
+  "newstatusuploadonly": "suspended",
+  accountstatus: "suspended"
+};
+
+const USER_BATCH_SUSPEND_TRUE = ["true", "1", "yes", "y", "suspend", "suspended", "停權", "已停權"];
+const USER_BATCH_SUSPEND_FALSE = ["false", "0", "no", "n", "active", "unsuspend", "restore", "有效", "啟用"];
 
 /**
  * Serves the Web App UI.
@@ -1212,6 +1274,331 @@ function truncateLogDetail_(text, maxLength) {
   return value.substring(0, limit - 3) + "...";
 }
 
+
+/* =========================================
+   CLASSROOM ROSTER BULK UPLOAD + COURSE BULK EDIT — v2.7.0
+   ========================================= */
+
+const ROSTER_BATCH_CONFIG = {
+  MAX_ROWS: 500,
+  TEMPLATE_HEADERS: ["courseId", "courseName", "section", "studentEmail"]
+};
+
+const ROSTER_BATCH_HEADER_ALIAS_LOOKUP = {
+  courseid: "courseId",
+  id: "courseId",
+  classid: "courseId",
+  coursename: "courseName",
+  course: "courseName",
+  classname: "courseName",
+  name: "courseName",
+  section: "section",
+  classsection: "section",
+  period: "section",
+  studentemail: "studentEmail",
+  student: "studentEmail",
+  email: "studentEmail",
+  emailaddress: "studentEmail",
+  useremail: "studentEmail",
+  primaryemail: "studentEmail"
+};
+
+const COURSE_EDIT_ALLOWED_FIELDS = ["name", "section", "description"];
+
+function mapRosterBatchHeaderIndexes_(headerRow) {
+  const headerMap = {};
+  (headerRow || []).forEach(function (rawHeader, index) {
+    const normalized = normalizeHeader_(rawHeader);
+    if (!normalized) return;
+    const canonical = ROSTER_BATCH_HEADER_ALIAS_LOOKUP[normalized];
+    if (canonical && headerMap[canonical] === undefined) headerMap[canonical] = index;
+  });
+  if (headerMap.studentEmail === undefined) {
+    throw new Error("Missing required column: studentEmail.");
+  }
+  if (headerMap.courseId === undefined && headerMap.courseName === undefined) {
+    throw new Error("File must include either a courseId column or a courseName column.");
+  }
+  return headerMap;
+}
+
+function normalizeBatchRosterRow_(rawRow, headerMap) {
+  const read = function (key) {
+    if (headerMap[key] === undefined) return undefined;
+    const raw = getRowValue_(rawRow, headerMap[key]);
+    const text = String(raw === undefined || raw === null ? "" : raw).trim();
+    return text === "" ? undefined : text;
+  };
+  return {
+    courseId: read("courseId"),
+    courseName: read("courseName"),
+    section: read("section"),
+    studentEmail: (read("studentEmail") || "").toLowerCase() || undefined
+  };
+}
+
+function isBatchRosterRowEmpty_(rowObj) {
+  return !rowObj || (!rowObj.courseId && !rowObj.courseName && !rowObj.section && !rowObj.studentEmail);
+}
+
+function validateBatchRosterRow_(rowObj) {
+  const errors = [];
+  if (!rowObj.studentEmail) errors.push("Missing studentEmail.");
+  else if (!isValidEmail_(rowObj.studentEmail)) errors.push("Invalid studentEmail: " + rowObj.studentEmail + ".");
+  if (!rowObj.courseId && !rowObj.courseName) errors.push("Row needs courseId or courseName.");
+  return { valid: errors.length === 0, errors: errors };
+}
+
+function assertRosterBatchRowLimit_(nonEmptyRowCount) {
+  if (nonEmptyRowCount > ROSTER_BATCH_CONFIG.MAX_ROWS) {
+    throw new Error("Upload exceeds the " + ROSTER_BATCH_CONFIG.MAX_ROWS + "-row limit (found " + nonEmptyRowCount + ").");
+  }
+}
+
+/**
+ * Builds name+section -> courseId lookup over active courses so uploads can
+ * reference a class the way humans write it rather than by opaque id.
+ */
+function buildCourseKeyToIdMap_() {
+  const map = {};
+  getAllActiveCourses_().forEach(function (course) {
+    map[buildCourseKey_(course.name, course.section)] = course.id;
+  });
+  return map;
+}
+
+function getCourseStudentBatchTemplate(format) {
+  const normalizedFormat = String(format || "csv").toLowerCase() === "tsv" ? "tsv" : "csv";
+  const delimiter = normalizedFormat === "tsv" ? "\t" : ",";
+  const mimeType = normalizedFormat === "tsv" ? "text/tab-separated-values" : "text/csv";
+
+  const templateRows = [
+    ROSTER_BATCH_CONFIG.TEMPLATE_HEADERS,
+    ["", "Math 6A", "2026-Spring", "student01@example.edu"],
+    ["", "Math 6A", "2026-Spring", "student02@example.edu"],
+    ["123456789012", "", "", "student03@example.edu"]
+  ];
+
+  const content = templateRows
+    .map(function (row) { return row.map(function (cell) { return escapeDelimitedValue_(cell, delimiter); }).join(delimiter); })
+    .join("\n");
+
+  return {
+    filename: "classroom-roster-batch-template." + normalizedFormat,
+    mimeType: mimeType,
+    content: content
+  };
+}
+
+/**
+ * Bulk-enrols students into Classroom courses from CSV/TSV.
+ * Students already on the roster are reported as skipped, not re-added.
+ */
+function processBatchCourseStudentUpload(fileName, fileContent) {
+  if (!fileContent || !String(fileContent).trim()) throw new Error("Upload file is empty.");
+
+  const delimiter = detectBatchDelimiter_(fileName, fileContent);
+  const rows = parseDelimitedRows_(fileContent, delimiter);
+  if (rows.length < 2) throw new Error("File must include headers and at least one data row.");
+
+  const headerMap = mapRosterBatchHeaderIndexes_(rows[0]);
+  const courseKeyMap = buildCourseKeyToIdMap_();
+
+  const skipped = [];
+  const byCourse = {};
+  const seen = {};
+  let nonEmptyRowCount = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const rowNumber = i + 1;
+    const rowObj = normalizeBatchRosterRow_(rows[i], headerMap);
+    if (isBatchRosterRowEmpty_(rowObj)) continue;
+    nonEmptyRowCount++;
+
+    const validation = validateBatchRosterRow_(rowObj);
+    if (!validation.valid) {
+      skipped.push({ rowNumber: rowNumber, email: rowObj.studentEmail || "", reason: validation.errors.join(" ") });
+      continue;
+    }
+
+    let courseId = rowObj.courseId;
+    if (!courseId) {
+      courseId = courseKeyMap[buildCourseKey_(rowObj.courseName, rowObj.section)];
+      if (!courseId) {
+        skipped.push({
+          rowNumber: rowNumber,
+          email: rowObj.studentEmail,
+          reason: "No active course matches name '" + rowObj.courseName + "'" + (rowObj.section ? " / section '" + rowObj.section + "'" : "") + "."
+        });
+        continue;
+      }
+    }
+
+    const dedupeKey = courseId + "|" + rowObj.studentEmail;
+    if (seen[dedupeKey]) {
+      skipped.push({ rowNumber: rowNumber, email: rowObj.studentEmail, reason: "Duplicate row in upload file." });
+      continue;
+    }
+    seen[dedupeKey] = true;
+
+    if (!byCourse[courseId]) byCourse[courseId] = [];
+    byCourse[courseId].push({ rowNumber: rowNumber, email: rowObj.studentEmail });
+  }
+
+  assertRosterBatchRowLimit_(nonEmptyRowCount);
+  if (nonEmptyRowCount === 0) throw new Error("No non-empty rows found in upload file.");
+
+  const enrolled = [];
+  const errors = [];
+
+  Object.keys(byCourse).forEach(function (courseId) {
+    const alreadyEnrolled = {};
+    getEnrolledStudentEmails(courseId).forEach(function (e) { alreadyEnrolled[e] = true; });
+
+    byCourse[courseId].forEach(function (entry) {
+      if (alreadyEnrolled[entry.email]) {
+        skipped.push({ rowNumber: entry.rowNumber, email: entry.email, reason: "Already enrolled in course " + courseId + "." });
+        return;
+      }
+      try {
+        Classroom.Courses.Students.create({ userId: entry.email }, courseId);
+        enrolled.push({ rowNumber: entry.rowNumber, courseId: courseId, email: entry.email });
+      } catch (e) {
+        let msg = getExceptionMessage_(e);
+        if (msg.indexOf("ALREADY_EXISTS") !== -1) {
+          skipped.push({ rowNumber: entry.rowNumber, email: entry.email, reason: "Already enrolled in course " + courseId + "." });
+        } else {
+          errors.push({ rowNumber: entry.rowNumber, courseId: courseId, email: entry.email, message: msg });
+        }
+      }
+    });
+  });
+
+  const result = {
+    fileName: fileName || "upload",
+    delimiter: delimiter === "\t" ? "TSV" : "CSV",
+    rowLimit: ROSTER_BATCH_CONFIG.MAX_ROWS,
+    summary: {
+      totalRows: nonEmptyRowCount,
+      courses: Object.keys(byCourse).length,
+      enrolled: enrolled.length,
+      skipped: skipped.length,
+      errors: errors.length
+    },
+    enrolled: enrolled,
+    skipped: skipped,
+    errors: errors
+  };
+
+  logSystemAction_(
+    "BATCH_ENROLL_STUDENTS",
+    result.fileName,
+    "COMPLETE",
+    truncateLogDetail_("Courses: " + result.summary.courses + " | Enrolled: " + enrolled.length + " | Skipped: " + skipped.length + " | Errors: " + errors.length)
+  );
+  return result;
+}
+
+/**
+ * Previews a bulk course-property edit without writing.
+ * mode "SET" assigns a literal value; mode "REPLACE" does substring replacement.
+ */
+function previewCourseBulkEdit(courseIds, field, mode, valueA, valueB) {
+  if (!courseIds || courseIds.length === 0) throw new Error("No courses selected.");
+  if (COURSE_EDIT_ALLOWED_FIELDS.indexOf(field) === -1) {
+    throw new Error("Field must be one of: " + COURSE_EDIT_ALLOWED_FIELDS.join(", ") + ".");
+  }
+  const normalizedMode = String(mode || "SET").toUpperCase() === "REPLACE" ? "REPLACE" : "SET";
+  if (normalizedMode === "REPLACE" && !valueA) throw new Error("Find text is required for replace mode.");
+
+  const selected = {};
+  courseIds.forEach(function (id) { selected[String(id)] = true; });
+
+  const changes = [];
+  const unchanged = [];
+
+  getAllActiveCourses_().forEach(function (course) {
+    if (!selected[String(course.id)]) return;
+    const current = course[field] === undefined || course[field] === null ? "" : String(course[field]);
+    let next;
+    if (normalizedMode === "SET") {
+      next = valueA === undefined || valueA === null ? "" : String(valueA);
+    } else {
+      next = current.split(String(valueA)).join(valueB === undefined || valueB === null ? "" : String(valueB));
+    }
+    if (next === current) {
+      unchanged.push({ courseId: course.id, name: course.name, section: course.section });
+    } else {
+      changes.push({ courseId: course.id, name: course.name, section: course.section, field: field, from: current, to: next });
+    }
+  });
+
+  return {
+    field: field,
+    mode: normalizedMode,
+    summary: { selected: courseIds.length, toUpdate: changes.length, noChange: unchanged.length },
+    changes: changes,
+    unchanged: unchanged
+  };
+}
+
+/**
+ * Applies bulk course-property edits using the Classroom multipart batch API
+ * (Classroom, unlike Directory, still supports /batch).
+ */
+function updateCoursesBatch(updates) {
+  if (!updates || updates.length === 0) throw new Error("No course updates supplied.");
+
+  const operations = updates.map(function (update, index) {
+    const body = {};
+    const maskFields = [];
+    COURSE_EDIT_ALLOWED_FIELDS.forEach(function (f) {
+      if (update[f] !== undefined) {
+        body[f] = update[f];
+        maskFields.push(f);
+      }
+    });
+    if (maskFields.length === 0) throw new Error("Course " + update.courseId + " has no updatable field.");
+    return {
+      contentId: "patch-" + index + "-" + update.courseId,
+      method: "PATCH",
+      path: "/v1/courses/" + encodeURIComponent(update.courseId) + "?updateMask=" + encodeURIComponent(maskFields.join(",")),
+      body: body
+    };
+  });
+
+  const responses = executeBatchOperations_(operations);
+  const byContentId = mapBatchResultsByContentId_(responses);
+
+  const updated = [];
+  const errors = [];
+  operations.forEach(function (op, index) {
+    const res = byContentId[op.contentId];
+    if (res && res.statusCode >= 200 && res.statusCode < 300) {
+      updated.push({ courseId: updates[index].courseId });
+    } else {
+      errors.push({
+        courseId: updates[index].courseId,
+        message: res ? extractApiErrorMessage_(res.body, "HTTP " + res.statusCode) : "No response returned."
+      });
+    }
+  });
+
+  const result = {
+    summary: { attempted: operations.length, updated: updated.length, errors: errors.length },
+    updated: updated,
+    errors: errors
+  };
+
+  logSystemAction_(
+    "BATCH_UPDATE_COURSES",
+    "Batch",
+    "COMPLETE",
+    truncateLogDetail_("Attempted: " + operations.length + " | Updated: " + updated.length + " | Errors: " + errors.length)
+  );
+  return result;
+}
+
 /* =========================================
    FEATURE 2: GROUP & MEMBER MANAGEMENT (Admin SDK Directory API)
    ========================================= */
@@ -1992,6 +2379,522 @@ function moveUsersToOU(emails, targetOU) {
   });
   logSystemAction_("MOVE_USERS", targetOU, "COMPLETE", `Moved: ${count}`);
   return { message: `Moved ${count} users.`, errors: errors };
+}
+
+
+/* =========================================
+   BULK USER UPDATE (Directory) — implementation
+   Preview-then-apply. Uses UrlFetchApp.fetchAll for parallel HTTP because the
+   Directory API has no supported multipart /batch endpoint.
+   ========================================= */
+
+function mapUserBatchHeaderIndexes_(headerRow) {
+  const headerMap = {};
+  (headerRow || []).forEach(function (rawHeader, index) {
+    const normalized = normalizeHeader_(rawHeader);
+    if (!normalized) return;
+    const canonical = USER_BATCH_HEADER_ALIAS_LOOKUP[normalized];
+    if (canonical && headerMap[canonical] === undefined) {
+      headerMap[canonical] = index;
+    }
+  });
+
+  const missing = USER_BATCH_REQUIRED_FIELDS.filter(function (field) {
+    return headerMap[field] === undefined;
+  });
+  if (missing.length > 0) {
+    throw new Error("Missing required column(s): " + missing.join(", ") + ".");
+  }
+
+  const hasEditable = USER_BATCH_EDITABLE_FIELDS.some(function (field) {
+    return headerMap[field] !== undefined;
+  });
+  if (!hasEditable) {
+    throw new Error("File must include at least one updatable column: " + USER_BATCH_EDITABLE_FIELDS.join(", ") + ".");
+  }
+  return headerMap;
+}
+
+function normalizeBatchUserRow_(rawRow, headerMap) {
+  const obj = { email: String(getRowValue_(rawRow, headerMap.email)).trim().toLowerCase() };
+  USER_BATCH_EDITABLE_FIELDS.forEach(function (field) {
+    if (headerMap[field] === undefined) {
+      obj[field] = undefined;
+      return;
+    }
+    const raw = getRowValue_(rawRow, headerMap[field]);
+    const text = String(raw === undefined || raw === null ? "" : raw).trim();
+    obj[field] = text === "" ? undefined : text;
+  });
+  return obj;
+}
+
+function isBatchUserRowEmpty_(rowObj) {
+  if (!rowObj) return true;
+  if (rowObj.email) return false;
+  return USER_BATCH_EDITABLE_FIELDS.every(function (f) { return !rowObj[f]; });
+}
+
+/**
+ * Coerces a spreadsheet cell into a boolean suspend flag.
+ * Returns true / false, or null when the value is not recognizable.
+ */
+function parseSuspendedValue_(value) {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim().toLowerCase();
+  if (text === "") return null;
+  if (USER_BATCH_SUSPEND_TRUE.indexOf(text) !== -1) return true;
+  if (USER_BATCH_SUSPEND_FALSE.indexOf(text) !== -1) return false;
+  return null;
+}
+
+function validateBatchUserRow_(rowObj) {
+  const errors = [];
+  if (!rowObj.email) {
+    errors.push("Missing email.");
+  } else if (!isValidEmail_(rowObj.email)) {
+    errors.push("Invalid email: " + rowObj.email + ".");
+  }
+
+  if (rowObj.orgUnitPath !== undefined && rowObj.orgUnitPath.charAt(0) !== "/") {
+    errors.push("orgUnitPath must start with '/' (got: " + rowObj.orgUnitPath + ").");
+  }
+
+  if (rowObj.suspended !== undefined && parseSuspendedValue_(rowObj.suspended) === null) {
+    errors.push("Unrecognized suspended value: " + rowObj.suspended + ". Use TRUE/FALSE, Active/Suspended, 1/0.");
+  }
+
+  const hasChange = USER_BATCH_EDITABLE_FIELDS.some(function (f) { return rowObj[f] !== undefined; });
+  if (!hasChange) errors.push("Row has no updatable value.");
+
+  return { valid: errors.length === 0, errors: errors };
+}
+
+function assertUserBatchRowLimit_(nonEmptyRowCount) {
+  if (nonEmptyRowCount > USER_BATCH_CONFIG.MAX_ROWS) {
+    throw new Error("Upload exceeds the " + USER_BATCH_CONFIG.MAX_ROWS + "-row limit (found " + nonEmptyRowCount + " non-empty rows). Split the file and upload again.");
+  }
+}
+
+/**
+ * Shared parse stage for both preview and apply so the two can never drift.
+ */
+function parseUserBatchFile_(fileName, fileContent) {
+  if (!fileContent || !String(fileContent).trim()) {
+    throw new Error("Upload file is empty.");
+  }
+  const delimiter = detectBatchDelimiter_(fileName, fileContent);
+  const rows = parseDelimitedRows_(fileContent, delimiter);
+  if (rows.length < 2) {
+    throw new Error("File must include headers and at least one data row.");
+  }
+
+  const headerMap = mapUserBatchHeaderIndexes_(rows[0]);
+  const seenEmails = {};
+  const skipped = [];
+  const candidates = [];
+  let nonEmptyRowCount = 0;
+
+  for (let i = 1; i < rows.length; i++) {
+    const rowNumber = i + 1;
+    const rowObj = normalizeBatchUserRow_(rows[i], headerMap);
+    if (isBatchUserRowEmpty_(rowObj)) continue;
+
+    nonEmptyRowCount++;
+    const validation = validateBatchUserRow_(rowObj);
+    if (!validation.valid) {
+      skipped.push({ rowNumber: rowNumber, email: rowObj.email || "", reason: validation.errors.join(" ") });
+      continue;
+    }
+    if (seenEmails[rowObj.email]) {
+      skipped.push({ rowNumber: rowNumber, email: rowObj.email, reason: "Duplicate email in upload file (first occurrence kept)." });
+      continue;
+    }
+    seenEmails[rowObj.email] = true;
+
+    candidates.push({
+      rowNumber: rowNumber,
+      email: rowObj.email,
+      firstName: rowObj.firstName,
+      lastName: rowObj.lastName,
+      orgUnitPath: rowObj.orgUnitPath,
+      suspended: rowObj.suspended === undefined ? undefined : parseSuspendedValue_(rowObj.suspended)
+    });
+  }
+
+  assertUserBatchRowLimit_(nonEmptyRowCount);
+  if (nonEmptyRowCount === 0) throw new Error("No non-empty rows found in upload file.");
+
+  return {
+    delimiter: delimiter,
+    headerMap: headerMap,
+    candidates: candidates,
+    skipped: skipped,
+    nonEmptyRowCount: nonEmptyRowCount
+  };
+}
+
+function getUserBatchDeps_() {
+  return {
+    fetchAll: function (requests) { return UrlFetchApp.fetchAll(requests); },
+    getToken: function () { return ScriptApp.getOAuthToken(); },
+    sleep: function (ms) { Utilities.sleep(ms); },
+    now: function () { return Date.now(); }
+  };
+}
+
+/**
+ * Reads the current Directory state for the given emails, in parallel chunks.
+ * Returns a map keyed by lowercase email; a missing account maps to null.
+ */
+function fetchDirectoryUserStates_(emails, deps) {
+  const d = deps || getUserBatchDeps_();
+  const token = d.getToken();
+  const states = {};
+  const chunkSize = USER_BATCH_CONFIG.CHUNK_SIZE;
+
+  for (let i = 0; i < emails.length; i += chunkSize) {
+    const slice = emails.slice(i, i + chunkSize);
+    const requests = slice.map(function (email) {
+      return {
+        url: USER_BATCH_CONFIG.USERS_ENDPOINT + encodeURIComponent(email) + "?projection=basic",
+        method: "get",
+        headers: { Authorization: "Bearer " + token },
+        muteHttpExceptions: true
+      };
+    });
+
+    const responses = d.fetchAll(requests);
+    responses.forEach(function (response, index) {
+      const email = slice[index];
+      const code = response.getResponseCode();
+      if (code === 200) {
+        const body = safeJsonParse_(response.getContentText()) || {};
+        states[email] = {
+          firstName: (body.name && body.name.givenName) || "",
+          lastName: (body.name && body.name.familyName) || "",
+          orgUnitPath: body.orgUnitPath || "",
+          suspended: body.suspended === true
+        };
+      } else {
+        states[email] = null;
+      }
+    });
+  }
+  return states;
+}
+
+/**
+ * Compares each candidate row against live Directory state.
+ * Classification: MISSING (no such account), NO_CHANGE (already correct), UPDATE.
+ */
+function buildUserBatchDiff_(candidates, states) {
+  const updates = [];
+  const unchanged = [];
+  const missing = [];
+
+  candidates.forEach(function (row) {
+    const current = states[row.email];
+    if (!current) {
+      missing.push({ rowNumber: row.rowNumber, email: row.email, reason: "No such account in this Workspace." });
+      return;
+    }
+
+    const changes = [];
+    if (row.firstName !== undefined && row.firstName !== current.firstName) {
+      changes.push({ field: "firstName", from: current.firstName, to: row.firstName });
+    }
+    if (row.lastName !== undefined && row.lastName !== current.lastName) {
+      changes.push({ field: "lastName", from: current.lastName, to: row.lastName });
+    }
+    if (row.orgUnitPath !== undefined && row.orgUnitPath !== current.orgUnitPath) {
+      changes.push({ field: "orgUnitPath", from: current.orgUnitPath, to: row.orgUnitPath });
+    }
+    if (row.suspended !== undefined && row.suspended !== current.suspended) {
+      changes.push({ field: "suspended", from: String(current.suspended), to: String(row.suspended) });
+    }
+
+    if (changes.length === 0) {
+      unchanged.push({ rowNumber: row.rowNumber, email: row.email });
+    } else {
+      updates.push({ rowNumber: row.rowNumber, email: row.email, changes: changes, payload: buildUserUpdatePayload_(changes) });
+    }
+  });
+
+  return { updates: updates, unchanged: unchanged, missing: missing };
+}
+
+function buildUserUpdatePayload_(changes) {
+  const payload = {};
+  changes.forEach(function (change) {
+    if (change.field === "firstName") {
+      payload.name = payload.name || {};
+      payload.name.givenName = change.to;
+    } else if (change.field === "lastName") {
+      payload.name = payload.name || {};
+      payload.name.familyName = change.to;
+    } else if (change.field === "orgUnitPath") {
+      payload.orgUnitPath = change.to;
+    } else if (change.field === "suspended") {
+      payload.suspended = change.to === "true";
+    }
+  });
+  return payload;
+}
+
+/**
+ * DRY RUN. Reads current state and returns the diff without writing anything.
+ */
+function previewBatchUserUpdate(fileName, fileContent) {
+  const parsed = parseUserBatchFile_(fileName, fileContent);
+  const emails = parsed.candidates.map(function (c) { return c.email; });
+  const states = fetchDirectoryUserStates_(emails, getUserBatchDeps_());
+  const diff = buildUserBatchDiff_(parsed.candidates, states);
+
+  return {
+    fileName: fileName || "upload",
+    delimiter: parsed.delimiter === "\t" ? "TSV" : "CSV",
+    rowLimit: USER_BATCH_CONFIG.MAX_ROWS,
+    summary: {
+      totalRows: parsed.nonEmptyRowCount,
+      toUpdate: diff.updates.length,
+      noChange: diff.unchanged.length,
+      missing: diff.missing.length,
+      skipped: parsed.skipped.length
+    },
+    updates: diff.updates.slice(0, 500),
+    unchanged: diff.unchanged,
+    missing: diff.missing,
+    skipped: parsed.skipped
+  };
+}
+
+function executeUserBatchChunk_(operations, deps) {
+  const d = deps || getUserBatchDeps_();
+  const token = d.getToken();
+  const requests = operations.map(function (op) {
+    return {
+      url: USER_BATCH_CONFIG.USERS_ENDPOINT + encodeURIComponent(op.email),
+      method: "put",
+      contentType: "application/json",
+      headers: { Authorization: "Bearer " + token },
+      payload: JSON.stringify(op.payload),
+      muteHttpExceptions: true
+    };
+  });
+
+  const responses = d.fetchAll(requests);
+  const results = [];
+  const retryIndexes = [];
+
+  responses.forEach(function (response, index) {
+    const code = response.getResponseCode();
+    if (code >= 200 && code < 300) {
+      results[index] = { ok: true, email: operations[index].email };
+    } else if (code === 429 || code >= 500) {
+      retryIndexes.push(index);
+      results[index] = null;
+    } else {
+      results[index] = {
+        ok: false,
+        email: operations[index].email,
+        message: extractApiErrorMessage_(safeJsonParse_(response.getContentText()), "HTTP " + code)
+      };
+    }
+  });
+
+  if (retryIndexes.length > 0) {
+    d.sleep(USER_BATCH_CONFIG.RETRY_DELAY_MS);
+    const retryRequests = retryIndexes.map(function (i) { return requests[i]; });
+    const retryResponses = d.fetchAll(retryRequests);
+    retryResponses.forEach(function (response, j) {
+      const i = retryIndexes[j];
+      const code = response.getResponseCode();
+      if (code >= 200 && code < 300) {
+        results[i] = { ok: true, email: operations[i].email };
+      } else {
+        results[i] = {
+          ok: false,
+          email: operations[i].email,
+          message: extractApiErrorMessage_(safeJsonParse_(response.getContentText()), "HTTP " + code + " (after retry)")
+        };
+      }
+    });
+  }
+
+  return results;
+}
+
+/**
+ * APPLY. Re-runs the diff so a stale preview can never write the wrong thing,
+ * then issues only the rows that genuinely differ.
+ */
+function processBatchUserUpdate(fileName, fileContent) {
+  const deps = getUserBatchDeps_();
+  const startedAt = deps.now();
+  const parsed = parseUserBatchFile_(fileName, fileContent);
+  const emails = parsed.candidates.map(function (c) { return c.email; });
+  const states = fetchDirectoryUserStates_(emails, deps);
+  const diff = buildUserBatchDiff_(parsed.candidates, states);
+
+  const updated = [];
+  const errors = [];
+  let resumeFromRow = null;
+  const chunkSize = USER_BATCH_CONFIG.CHUNK_SIZE;
+
+  for (let i = 0; i < diff.updates.length; i += chunkSize) {
+    if (deps.now() - startedAt > USER_BATCH_CONFIG.TIME_BUDGET_MS) {
+      resumeFromRow = diff.updates[i].rowNumber;
+      break;
+    }
+    const slice = diff.updates.slice(i, i + chunkSize);
+    const results = executeUserBatchChunk_(slice, deps);
+    results.forEach(function (result, index) {
+      const op = slice[index];
+      if (result && result.ok) {
+        updated.push({ rowNumber: op.rowNumber, email: op.email, changes: op.changes });
+      } else {
+        errors.push({
+          rowNumber: op.rowNumber,
+          email: op.email,
+          message: (result && result.message) || "Unknown failure."
+        });
+      }
+    });
+  }
+
+  // Any account we just reactivated must leave the auto-deletion queue.
+  const unsuspendedEmails = updated
+    .filter(function (u) {
+      return u.changes.some(function (c) { return c.field === "suspended" && c.to === "false"; });
+    })
+    .map(function (u) { return u.email; });
+  let dequeued = 0;
+  if (unsuspendedEmails.length > 0) {
+    dequeued = clearDeletionQueueEntries_(unsuspendedEmails);
+  }
+
+  const result = {
+    fileName: fileName || "upload",
+    delimiter: parsed.delimiter === "\t" ? "TSV" : "CSV",
+    rowLimit: USER_BATCH_CONFIG.MAX_ROWS,
+    summary: {
+      totalRows: parsed.nonEmptyRowCount,
+      attempted: diff.updates.length,
+      updated: updated.length,
+      noChange: diff.unchanged.length,
+      missing: diff.missing.length,
+      skipped: parsed.skipped.length,
+      errors: errors.length,
+      dequeued: dequeued
+    },
+    updated: updated,
+    unchanged: diff.unchanged,
+    missing: diff.missing,
+    skipped: parsed.skipped,
+    errors: errors,
+    resumeFromRow: resumeFromRow
+  };
+
+  logSystemAction_("BATCH_UPDATE_USERS", result.fileName, resumeFromRow ? "PARTIAL" : "COMPLETE", buildUserBatchUpdateLogDetail_(result));
+  return result;
+}
+
+function buildUserBatchUpdateLogDetail_(result) {
+  const s = result.summary || {};
+  const parts = [
+    "File: " + result.fileName,
+    "Format: " + result.delimiter,
+    "Rows: " + s.totalRows,
+    "Updated: " + s.updated,
+    "NoChange: " + s.noChange,
+    "Missing: " + s.missing,
+    "Skipped: " + s.skipped,
+    "Errors: " + s.errors
+  ];
+  if (s.dequeued) parts.push("DequeuedFromDeletion: " + s.dequeued);
+  if (result.resumeFromRow) parts.push("STOPPED at row " + result.resumeFromRow + " (time budget)");
+  const sample = (result.updated || []).slice(0, 5).map(function (u) {
+    return u.email + " [" + u.changes.map(function (c) { return c.field; }).join(",") + "]";
+  });
+  if (sample.length) parts.push("Sample: " + sample.join("; "));
+  return truncateLogDetail_(parts.join(" | "));
+}
+
+function getUserBatchTemplate(format) {
+  const normalizedFormat = String(format || "csv").toLowerCase() === "tsv" ? "tsv" : "csv";
+  const delimiter = normalizedFormat === "tsv" ? "\t" : ",";
+  const mimeType = normalizedFormat === "tsv" ? "text/tab-separated-values" : "text/csv";
+
+  const templateRows = [
+    USER_BATCH_CONFIG.TEMPLATE_HEADERS,
+    ["student01@example.edu", "王小明", "6年一班01號", "/openid/學生/六年級", "FALSE"],
+    ["student02@example.edu", "李小華", "6年一班02號", "/openid/學生/六年級", "FALSE"],
+    ["leaver01@example.edu", "", "", "", "TRUE"]
+  ];
+
+  const content = templateRows
+    .map(function (row) { return row.map(function (cell) { return escapeDelimitedValue_(cell, delimiter); }).join(delimiter); })
+    .join("\n");
+
+  return {
+    filename: "directory-user-update-template." + normalizedFormat,
+    mimeType: mimeType,
+    content: content
+  };
+}
+
+/**
+ * Reactivates accounts and removes them from the pending-deletion queue so the
+ * daily checkDeletionQueue() trigger cannot delete a reinstated user.
+ */
+function processUserUnsuspension(emails) {
+  if (!emails || emails.length === 0) return "No users selected.";
+  let count = 0;
+  const errors = [];
+  emails.forEach(function (email) {
+    try {
+      AdminDirectory.Users.update({ suspended: false }, email);
+      count++;
+    } catch (err) {
+      errors.push(email + ": " + getExceptionMessage_(err));
+    }
+  });
+  const dequeued = clearDeletionQueueEntries_(emails);
+  logSystemAction_("UNSUSPEND_BATCH", "Batch", "COMPLETE", "Unsuspended " + count + ", dequeued " + dequeued + ", errors " + errors.length);
+  return "Unsuspended " + count + " user(s). Removed " + dequeued + " from the deletion queue." +
+    (errors.length ? " Errors: " + errors.length : "");
+}
+
+/**
+ * Marks queued deletion rows as cancelled for the supplied emails.
+ * Returns the number of rows changed.
+ */
+function clearDeletionQueueEntries_(emails) {
+  if (!emails || emails.length === 0) return 0;
+  const target = {};
+  emails.forEach(function (e) { target[String(e).toLowerCase()] = true; });
+
+  const ss = getDBSpreadsheet_();
+  const sheet = ss.getSheetByName(CONFIG.SHEET_NAME_ACTIONS);
+  if (!sheet) return 0;
+
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  if (values.length <= 1) return 0;
+
+  let changed = 0;
+  for (let i = 1; i < values.length; i++) {
+    const email = String(values[i][1] || "").toLowerCase();
+    const status = String(values[i][2] || "");
+    if (target[email] && status === "Suspended") {
+      values[i][2] = "Cancelled (Reactivated)";
+      values[i][0] = new Date();
+      changed++;
+    }
+  }
+  if (changed > 0) range.setValues(values);
+  return changed;
 }
 
 /* =========================================
