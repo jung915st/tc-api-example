@@ -213,11 +213,51 @@
               </div>
             </div>
 
+
+            <!-- Batch Add Students Card (v2.7.0) -->
+            <div class="card mb-3">
+              <div class="card-header bg-white fw-bold text-primary">
+                <i class="bi bi-person-plus"></i> Batch Add Students to Course (CSV / TSV)
+              </div>
+              <div class="card-body">
+                <div class="row g-2 align-items-end">
+                  <div class="col-md-8">
+                    <label class="form-label small text-muted mb-1">Upload file</label>
+                    <input type="file" id="batchRosterFile" class="form-control" accept=".csv,.tsv,text/csv,text/tab-separated-values">
+                  </div>
+                  <div class="col-md-4 d-grid">
+                    <button class="btn btn-primary" onclick="uploadBatchRoster()">
+                      <i class="bi bi-cloud-arrow-up"></i> Upload &amp; Enrol
+                    </button>
+                  </div>
+                  <div class="col-12 d-flex flex-wrap gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="downloadRosterBatchTemplate('csv')">
+                      <i class="bi bi-download"></i> CSV Sample
+                    </button>
+                    <button class="btn btn-outline-secondary btn-sm" onclick="downloadRosterBatchTemplate('tsv')">
+                      <i class="bi bi-download"></i> TSV Sample
+                    </button>
+                  </div>
+                  <div class="col-12">
+                    <small class="text-muted">
+                      Required: <code>studentEmail</code>, plus <code>courseId</code> <em>or</em>
+                      <code>courseName</code> (+ optional <code>section</code>). Already-enrolled students are
+                      skipped automatically. Maximum 500 non-empty rows.
+                    </small>
+                  </div>
+                </div>
+                <div id="batchRosterResult" class="mt-3 small text-muted">No roster upload executed yet.</div>
+              </div>
+            </div>
+
             <!-- List Courses Card -->
             <div class="card">
               <div class="card-header bg-white d-flex justify-content-between align-items-center">
                 <span>Active Courses</span>
                 <div class="d-flex gap-2">
+                  <button class="btn btn-sm btn-outline-primary" id="bulkEditSelectedBtn" onclick="openCourseBulkEdit()" disabled>
+                    <i class="bi bi-pencil-square"></i> Bulk Edit (<span id="bulkEditCount">0</span>)
+                  </button>
                   <button class="btn btn-sm btn-outline-warning" id="archiveSelectedBtn" onclick="archiveSelectedCourses()" disabled>
                     <i class="bi bi-archive"></i> Archive Selected (<span id="archiveCount">0</span>)
                   </button>
@@ -364,13 +404,59 @@
           </div>
         </div>
 
+
+        <!-- Bulk Update Users Card (v2.7.0) -->
+        <div class="card mb-3">
+          <div class="card-header bg-white fw-bold text-primary">
+            <i class="bi bi-people"></i> Bulk Update Users (CSV / TSV)
+          </div>
+          <div class="card-body">
+            <div class="row g-2 align-items-end">
+              <div class="col-md-6">
+                <label class="form-label small text-muted mb-1">Upload file</label>
+                <input type="file" id="batchUserFile" class="form-control form-control-sm" accept=".csv,.tsv,text/csv,text/tab-separated-values" onchange="resetUserBatchPreview()">
+              </div>
+              <div class="col-md-3 d-grid">
+                <button class="btn btn-outline-primary btn-sm" onclick="previewBatchUsers()">
+                  <i class="bi bi-search"></i> Preview Changes
+                </button>
+              </div>
+              <div class="col-md-3 d-grid">
+                <button class="btn btn-primary btn-sm" id="applyBatchUserBtn" onclick="applyBatchUsers()" disabled>
+                  <i class="bi bi-cloud-arrow-up"></i> Apply Update
+                </button>
+              </div>
+              <div class="col-12 d-flex flex-wrap gap-2">
+                <button class="btn btn-outline-secondary btn-sm" onclick="downloadUserBatchTemplate('csv')">
+                  <i class="bi bi-download"></i> CSV Sample
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="downloadUserBatchTemplate('tsv')">
+                  <i class="bi bi-download"></i> TSV Sample
+                </button>
+              </div>
+              <div class="col-12">
+                <small class="text-muted">
+                  Required header: <code>email</code>. Updatable: <code>firstName</code>, <code>lastName</code>,
+                  <code>orgUnitPath</code>, <code>suspended</code> (TRUE/FALSE). Google Admin export headers are
+                  also accepted. Passwords are never changed. Maximum 600 non-empty rows.
+                  <strong>Preview is required before Apply.</strong>
+                </small>
+              </div>
+            </div>
+            <div id="batchUserResult" class="mt-3 small text-muted">No bulk update executed yet.</div>
+          </div>
+        </div>
+
         <!-- Toolbar with Dropdown Move -->
         <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
           
           <!-- Group 1: Suspend -->
           <div>
             <button class="btn btn-outline-danger btn-sm" onclick="suspendSelected()">
-              <i class="bi bi-pause-circle"></i> Suspend & Queue Delete
+              <i class="bi bi-pause-circle"></i> Suspend &amp; Queue Delete
+            </button>
+            <button class="btn btn-outline-success btn-sm" onclick="unsuspendSelected()">
+              <i class="bi bi-play-circle"></i> Unsuspend &amp; Dequeue
             </button>
           </div>
 
@@ -727,6 +813,57 @@
 
   <!-- JavaScript Logic -->
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Course Bulk Edit Modal (v2.7.0) -->
+  <div class="modal fade" id="courseBulkEditModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title"><i class="bi bi-pencil-square"></i> Bulk Edit Courses</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div class="row g-2 align-items-end mb-3">
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Field</label>
+              <select id="bulkEditField" class="form-select form-select-sm">
+                <option value="section">section</option>
+                <option value="name">name</option>
+                <option value="description">description</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold">Mode</label>
+              <select id="bulkEditMode" class="form-select form-select-sm" onchange="toggleBulkEditMode()">
+                <option value="SET">Set value</option>
+                <option value="REPLACE">Find &amp; replace</option>
+              </select>
+            </div>
+            <div class="col-md-3">
+              <label class="form-label small fw-bold" id="bulkEditLabelA">New value</label>
+              <input type="text" id="bulkEditValueA" class="form-control form-control-sm">
+            </div>
+            <div class="col-md-3" id="bulkEditValueBWrap" style="display:none;">
+              <label class="form-label small fw-bold">Replace with</label>
+              <input type="text" id="bulkEditValueB" class="form-control form-control-sm">
+            </div>
+          </div>
+          <div class="d-flex gap-2 mb-3">
+            <button class="btn btn-outline-primary btn-sm" onclick="previewCourseBulkEdit()">
+              <i class="bi bi-search"></i> Preview
+            </button>
+            <button class="btn btn-primary btn-sm" id="applyCourseBulkEditBtn" onclick="applyCourseBulkEdit()" disabled>
+              <i class="bi bi-check2"></i> Apply Changes
+            </button>
+          </div>
+          <div id="courseBulkEditResult" class="small text-muted">Choose a field and mode, then Preview.</div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Close</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script>
     // --- GLOBAL UTILS ---
     let enrolledEmailsCache_ = null; // null = not yet fetched; Set = ready
@@ -1129,6 +1266,7 @@
     }
 
     function updateArchiveCount_() {
+      updateBulkEditCount_();
       const count = getCheckedValues('.course-check').length;
       const archiveBtn = document.getElementById('archiveSelectedBtn');
       const deleteBtn = document.getElementById('deleteSelectedActiveBtn');
@@ -1569,12 +1707,12 @@
             
           tbody.innerHTML += `
             <tr>
-              <td><input type="checkbox" class="user-check" value="${u.email}"></td>
-              <td>${u.name}</td>
-              <td>${u.email}</td>
-              <td>${u.lastLogin}</td>
+              <td><input type="checkbox" class="user-check" value="${escapeHtml(u.email)}"></td>
+              <td>${escapeHtml(u.name)}</td>
+              <td>${escapeHtml(u.email)}</td>
+              <td>${escapeHtml(u.lastLogin)}</td>
               <td>${badge}</td>
-              <td><small class="text-muted">${u.org}</small></td>
+              <td><small class="text-muted">${escapeHtml(u.org)}</small></td>
             </tr>`;
         });
       }).withFailureHandler(err => {
@@ -1631,6 +1769,320 @@
         setLoader(false);
         alert(msg);
       }).installTrigger();
+    }
+
+
+    /* ==================== BULK USER UPDATE (v2.7.0) ==================== */
+
+    let userBatchPreviewOk = false;
+
+    function resetUserBatchPreview() {
+      userBatchPreviewOk = false;
+      const btn = document.getElementById('applyBatchUserBtn');
+      if (btn) btn.disabled = true;
+      const box = document.getElementById('batchUserResult');
+      if (box) box.innerHTML = '<span class="text-muted">File changed — run Preview before applying.</span>';
+    }
+
+    function readUserBatchFile_(callback) {
+      const input = document.getElementById('batchUserFile');
+      const file = input.files && input.files[0];
+      if (!file) { alert("Please choose a CSV or TSV file."); return; }
+      const lowerName = file.name.toLowerCase();
+      if (!(lowerName.endsWith('.csv') || lowerName.endsWith('.tsv'))) {
+        alert("Only CSV or TSV files are supported."); return;
+      }
+      const reader = new FileReader();
+      reader.onload = evt => callback(file.name, evt.target.result || "");
+      reader.onerror = () => alert("Failed to read the selected file.");
+      reader.readAsText(file);
+    }
+
+    function previewBatchUsers() {
+      readUserBatchFile_((name, content) => {
+        setLoader(true, `Previewing ${name}...`);
+        google.script.run.withSuccessHandler(result => {
+          setLoader(false);
+          renderUserBatchPreview(result);
+          userBatchPreviewOk = (result.summary.toUpdate > 0);
+          document.getElementById('applyBatchUserBtn').disabled = !userBatchPreviewOk;
+        }).withFailureHandler(err => {
+          setLoader(false);
+          userBatchPreviewOk = false;
+          document.getElementById('applyBatchUserBtn').disabled = true;
+          alert("Preview failed: " + err.message);
+        }).previewBatchUserUpdate(name, content);
+      });
+    }
+
+    function applyBatchUsers() {
+      if (!userBatchPreviewOk) return alert("Run Preview first.");
+      readUserBatchFile_((name, content) => {
+        if (!confirm(`Apply directory changes from ${name}?\n\nThis rewrites names / org units / suspension state for the accounts listed in the preview. Passwords are not touched.`)) return;
+        setLoader(true, `Updating users from ${name}...`);
+        google.script.run.withSuccessHandler(result => {
+          setLoader(false);
+          renderUserBatchResult(result);
+          userBatchPreviewOk = false;
+          document.getElementById('applyBatchUserBtn').disabled = true;
+          filterUsers();
+        }).withFailureHandler(err => {
+          setLoader(false);
+          alert("Bulk update failed: " + err.message);
+        }).processBatchUserUpdate(name, content);
+      });
+    }
+
+    function downloadUserBatchTemplate(format) {
+      setLoader(true, `Preparing ${format.toUpperCase()} template...`);
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        downloadTextFile_(res.content, res.mimeType, res.filename || `directory-user-update-template.${format}`);
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Template download failed: " + err.message);
+      }).getUserBatchTemplate(format);
+    }
+
+    function downloadTextFile_(content, mimeType, filename) {
+      const blob = new Blob([content], { type: mimeType || "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    }
+
+    function renderChangeList_(changes) {
+      return (changes || []).map(c =>
+        `<code>${escapeHtml(c.field)}</code>: ${escapeHtml(c.from || '(empty)')} &rarr; <strong>${escapeHtml(c.to || '(empty)')}</strong>`
+      ).join('<br>');
+    }
+
+    function renderUserBatchPreview(result) {
+      const el = document.getElementById('batchUserResult');
+      if (!el || !result) return;
+      const s = result.summary || {};
+      const cls = s.missing || s.skipped ? "alert-warning" : "alert-info";
+
+      const rows = (result.updates || []).map(u =>
+        `<tr><td class="text-muted">${u.rowNumber}</td><td>${escapeHtml(u.email)}</td><td>${renderChangeList_(u.changes)}</td></tr>`
+      ).join('');
+
+      const table = rows
+        ? `<div class="table-responsive batch-result-scroll mt-2"><table class="table table-sm table-bordered mb-0">
+             <thead class="table-light"><tr><th width="60">Row</th><th>Email</th><th>Changes</th></tr></thead>
+             <tbody>${rows}</tbody></table></div>`
+        : '<div class="mt-2 text-muted">Nothing to update — every row already matches the directory.</div>';
+
+      el.innerHTML = `
+        <div class="alert ${cls} mb-0">
+          <strong>Preview — nothing has been written.</strong><br>
+          File: ${escapeHtml(result.fileName)} (${result.delimiter}) &middot;
+          Rows: ${s.totalRows} &middot;
+          <span class="text-primary">To update: <strong>${s.toUpdate}</strong></span> &middot;
+          No change: ${s.noChange} &middot;
+          Missing: ${s.missing} &middot;
+          Skipped: ${s.skipped}
+          ${table}
+          ${renderIssueList_('Missing accounts', result.missing, i => `${i.email} — ${i.reason}`)}
+          ${renderIssueList_('Skipped rows', result.skipped, i => `Row ${i.rowNumber}: ${i.reason}`)}
+        </div>`;
+    }
+
+    function renderIssueList_(title, items, formatter) {
+      if (!items || items.length === 0) return '';
+      return `<div class="mt-2"><strong>${escapeHtml(title)} (${items.length})</strong>
+        <ul class="mb-0 ps-3 batch-result-scroll">${items.map(i => `<li>${escapeHtml(formatter(i))}</li>`).join('')}</ul></div>`;
+    }
+
+    function renderUserBatchResult(result) {
+      const el = document.getElementById('batchUserResult');
+      if (!el || !result) return;
+      const s = result.summary || {};
+      const cls = (s.errors || result.resumeFromRow) ? "alert-warning" : "alert-success";
+      const resumeNote = result.resumeFromRow
+        ? `<div class="mt-2 text-danger"><strong>Stopped early at row ${result.resumeFromRow}</strong> to stay inside the Apps Script time limit. Re-upload a file containing the remaining rows.</div>`
+        : '';
+      const dequeuedNote = s.dequeued
+        ? `<div class="mt-1 text-success">${s.dequeued} account(s) removed from the auto-deletion queue.</div>`
+        : '';
+
+      el.innerHTML = `
+        <div class="alert ${cls} mb-0">
+          <strong>Bulk update complete.</strong><br>
+          File: ${escapeHtml(result.fileName)} (${result.delimiter}) &middot;
+          Rows: ${s.totalRows} &middot;
+          Updated: <strong>${s.updated}</strong> &middot;
+          No change: ${s.noChange} &middot;
+          Missing: ${s.missing} &middot;
+          Skipped: ${s.skipped} &middot;
+          Errors: ${s.errors}
+          ${dequeuedNote}
+          ${resumeNote}
+          ${renderIssueList_('Errors', result.errors, i => `Row ${i.rowNumber} ${i.email}: ${i.message}`)}
+          ${renderIssueList_('Missing accounts', result.missing, i => `${i.email} — ${i.reason}`)}
+          ${renderIssueList_('Skipped rows', result.skipped, i => `Row ${i.rowNumber}: ${i.reason}`)}
+        </div>`;
+    }
+
+    function unsuspendSelected() {
+      const emails = getCheckedValues('.user-check');
+      if (emails.length === 0) return alert("No users selected.");
+      if (!confirm(`Reactivate ${emails.length} user(s)?\nThey will also be removed from the pending-deletion queue.`)) return;
+      setLoader(true, "Reactivating...");
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        alert(msg);
+        filterUsers();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Unsuspend failed: " + err.message);
+      }).processUserUnsuspension(emails);
+    }
+
+    /* ==================== CLASSROOM ROSTER UPLOAD (v2.7.0) ==================== */
+
+    function uploadBatchRoster() {
+      const input = document.getElementById('batchRosterFile');
+      const file = input.files && input.files[0];
+      if (!file) return alert("Please choose a CSV or TSV file.");
+      const lowerName = file.name.toLowerCase();
+      if (!(lowerName.endsWith('.csv') || lowerName.endsWith('.tsv'))) {
+        return alert("Only CSV or TSV files are supported.");
+      }
+      const reader = new FileReader();
+      reader.onload = evt => {
+        setLoader(true, `Enrolling students from ${file.name}...`);
+        google.script.run.withSuccessHandler(result => {
+          setLoader(false);
+          renderRosterBatchResult(result);
+        }).withFailureHandler(err => {
+          setLoader(false);
+          alert("Roster upload failed: " + err.message);
+        }).processBatchCourseStudentUpload(file.name, evt.target.result || "");
+      };
+      reader.onerror = () => alert("Failed to read the selected file.");
+      reader.readAsText(file);
+    }
+
+    function downloadRosterBatchTemplate(format) {
+      setLoader(true, `Preparing ${format.toUpperCase()} template...`);
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        downloadTextFile_(res.content, res.mimeType, res.filename || `classroom-roster-batch-template.${format}`);
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Template download failed: " + err.message);
+      }).getCourseStudentBatchTemplate(format);
+    }
+
+    function renderRosterBatchResult(result) {
+      const el = document.getElementById('batchRosterResult');
+      if (!el || !result) return;
+      const s = result.summary || {};
+      const cls = s.errors ? "alert-warning" : "alert-success";
+      el.innerHTML = `
+        <div class="alert ${cls} mb-0">
+          <strong>Roster upload complete.</strong><br>
+          File: ${escapeHtml(result.fileName)} (${result.delimiter}) &middot;
+          Rows: ${s.totalRows} &middot;
+          Courses: ${s.courses} &middot;
+          Enrolled: <strong>${s.enrolled}</strong> &middot;
+          Skipped: ${s.skipped} &middot;
+          Errors: ${s.errors}
+          ${renderIssueList_('Errors', result.errors, i => `Row ${i.rowNumber} ${i.email}: ${i.message}`)}
+          ${renderIssueList_('Skipped rows', result.skipped, i => `Row ${i.rowNumber} ${i.email}: ${i.reason}`)}
+        </div>`;
+    }
+
+    /* ==================== COURSE BULK EDIT (v2.7.0) ==================== */
+
+    let courseBulkEditPreview = null;
+
+    function updateBulkEditCount_() {
+      const n = getCheckedValues('.course-check').length;
+      const label = document.getElementById('bulkEditCount');
+      const btn = document.getElementById('bulkEditSelectedBtn');
+      if (label) label.innerText = n;
+      if (btn) btn.disabled = (n === 0);
+    }
+
+    function toggleBulkEditMode() {
+      const mode = document.getElementById('bulkEditMode').value;
+      document.getElementById('bulkEditValueBWrap').style.display = (mode === 'REPLACE') ? '' : 'none';
+      document.getElementById('bulkEditLabelA').innerText = (mode === 'REPLACE') ? 'Find text' : 'New value';
+    }
+
+    function openCourseBulkEdit() {
+      if (getCheckedValues('.course-check').length === 0) return alert("Select at least one course.");
+      courseBulkEditPreview = null;
+      document.getElementById('applyCourseBulkEditBtn').disabled = true;
+      document.getElementById('courseBulkEditResult').innerHTML =
+        '<span class="text-muted">Choose a field and mode, then Preview.</span>';
+      new bootstrap.Modal(document.getElementById('courseBulkEditModal')).show();
+    }
+
+    function previewCourseBulkEdit() {
+      const ids = getCheckedValues('.course-check');
+      if (ids.length === 0) return alert("No courses selected.");
+      const field = document.getElementById('bulkEditField').value;
+      const mode = document.getElementById('bulkEditMode').value;
+      const a = document.getElementById('bulkEditValueA').value;
+      const b = document.getElementById('bulkEditValueB').value;
+
+      setLoader(true, "Previewing course changes...");
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        courseBulkEditPreview = result;
+        document.getElementById('applyCourseBulkEditBtn').disabled = (result.summary.toUpdate === 0);
+        const rows = (result.changes || []).map(c =>
+          `<tr><td>${escapeHtml(c.name)}</td><td>${escapeHtml(c.section || '')}</td>
+           <td>${escapeHtml(c.from || '(empty)')} &rarr; <strong>${escapeHtml(c.to || '(empty)')}</strong></td></tr>`
+        ).join('');
+        document.getElementById('courseBulkEditResult').innerHTML = `
+          <div class="alert alert-info mb-0">
+            <strong>Preview — nothing written.</strong> Selected: ${result.summary.selected} &middot;
+            To update: <strong>${result.summary.toUpdate}</strong> &middot; No change: ${result.summary.noChange}
+            ${rows ? `<div class="table-responsive batch-result-scroll mt-2"><table class="table table-sm table-bordered mb-0">
+              <thead class="table-light"><tr><th>Course</th><th>Section</th><th>${escapeHtml(result.field)}</th></tr></thead>
+              <tbody>${rows}</tbody></table></div>` : '<div class="mt-2">No course would change.</div>'}
+          </div>`;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Preview failed: " + err.message);
+      }).previewCourseBulkEdit(ids, field, mode, a, b);
+    }
+
+    function applyCourseBulkEdit() {
+      if (!courseBulkEditPreview || !courseBulkEditPreview.changes.length) return alert("Run Preview first.");
+      const field = courseBulkEditPreview.field;
+      const updates = courseBulkEditPreview.changes.map(c => {
+        const u = { courseId: c.courseId };
+        u[field] = c.to;
+        return u;
+      });
+      if (!confirm(`Apply "${field}" changes to ${updates.length} course(s)?`)) return;
+
+      setLoader(true, "Updating courses...");
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        const s = result.summary || {};
+        document.getElementById('courseBulkEditResult').innerHTML = `
+          <div class="alert ${s.errors ? 'alert-warning' : 'alert-success'} mb-0">
+            <strong>Updated ${s.updated} of ${s.attempted} course(s).</strong> Errors: ${s.errors}
+            ${renderIssueList_('Errors', result.errors, i => `${i.courseId}: ${i.message}`)}
+          </div>`;
+        courseBulkEditPreview = null;
+        document.getElementById('applyCourseBulkEditBtn').disabled = true;
+        loadCourses();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("Bulk edit failed: " + err.message);
+      }).updateCoursesBatch(updates);
     }
 
     // --- DRIVE AUDIT FUNCTIONS ---
