@@ -5,6 +5,27 @@
 
 function runBatchCourseUnitTests() {
   const tests = [
+    test_mapUserBatchHeaderIndexes_aliases,
+    test_mapUserBatchHeaderIndexes_shortAliases,
+    test_mapUserBatchHeaderIndexes_missingEmail,
+    test_mapUserBatchHeaderIndexes_noEditableColumn,
+    test_parseSuspendedValue_variants,
+    test_validateBatchUserRow_rejectsBadOu,
+    test_validateBatchUserRow_rejectsNoChange,
+    test_assertUserBatchRowLimit_over600,
+    test_buildUserBatchDiff_classifies,
+    test_buildUserUpdatePayload_shapes,
+    test_buildUserUpdatePayload_omitsUntouchedFields,
+    test_parseUserBatchFile_skipsDuplicatesAndInvalid,
+    test_executeUserBatchChunk_retriesOn429,
+    test_executeUserBatchChunk_reportsHardFailure,
+    test_getUserBatchTemplate_hasNoPasswordColumn,
+    test_mapRosterBatchHeaderIndexes_requiresCourseRef,
+    test_mapRosterBatchHeaderIndexes_acceptsCourseName,
+    test_validateBatchRosterRow_invalidEmail,
+    test_getCourseStudentBatchTemplate_csv,
+    test_previewCourseBulkEdit_rejectsBadField,
+    test_previewCourseBulkEdit_rejectsEmptySelection,
     test_detectDelimiter_csv,
     test_detectDelimiter_tsv,
     test_mapHeaderIndexes_aliases,
@@ -1088,4 +1109,204 @@ function assertThrows_(fn, expectedMessageFragment, message) {
   if (!threw) {
     throw new Error(message || "Assertion failed: expected function to throw.");
   }
+}
+
+/* ==================== v2.7.0: BULK USER UPDATE TESTS ==================== */
+
+function test_mapUserBatchHeaderIndexes_aliases() {
+  const map = mapUserBatchHeaderIndexes_(["Email Address [Required]", "First Name [Required]", "Last Name [Required]", "Org Unit Path [Required]", "New Status [UPLOAD ONLY]"]);
+  assertEqual_(map.email, 0, "email index");
+  assertEqual_(map.firstName, 1, "firstName index");
+  assertEqual_(map.lastName, 2, "lastName index");
+  assertEqual_(map.orgUnitPath, 3, "orgUnitPath index");
+  assertEqual_(map.suspended, 4, "suspended index");
+}
+
+function test_mapUserBatchHeaderIndexes_shortAliases() {
+  const map = mapUserBatchHeaderIndexes_(["primaryEmail", "givenName", "familyName", "ou"]);
+  assertEqual_(map.email, 0, "email");
+  assertEqual_(map.firstName, 1, "firstName");
+  assertEqual_(map.lastName, 2, "lastName");
+  assertEqual_(map.orgUnitPath, 3, "orgUnitPath");
+}
+
+function test_mapUserBatchHeaderIndexes_missingEmail() {
+  assertThrows_(function () {
+    mapUserBatchHeaderIndexes_(["firstName", "lastName"]);
+  }, "Missing required column", "should require email column");
+}
+
+function test_mapUserBatchHeaderIndexes_noEditableColumn() {
+  assertThrows_(function () {
+    mapUserBatchHeaderIndexes_(["email"]);
+  }, "at least one updatable column", "email alone is not enough");
+}
+
+function test_parseSuspendedValue_variants() {
+  assertEqual_(parseSuspendedValue_("TRUE"), true, "TRUE");
+  assertEqual_(parseSuspendedValue_("suspended"), true, "suspended");
+  assertEqual_(parseSuspendedValue_("1"), true, "1");
+  assertEqual_(parseSuspendedValue_("FALSE"), false, "FALSE");
+  assertEqual_(parseSuspendedValue_("Active"), false, "Active");
+  assertEqual_(parseSuspendedValue_("0"), false, "0");
+  assertEqual_(parseSuspendedValue_("maybe"), null, "unrecognized");
+  assertEqual_(parseSuspendedValue_(""), null, "empty");
+}
+
+function test_validateBatchUserRow_rejectsBadOu() {
+  const result = validateBatchUserRow_({ email: "a@b.edu", orgUnitPath: "openid/學生" });
+  assertFalse_(result.valid, "should be invalid");
+  assertTrue_(result.errors.join(" ").indexOf("must start with") !== -1, "should explain leading slash");
+}
+
+function test_validateBatchUserRow_rejectsNoChange() {
+  const result = validateBatchUserRow_({ email: "a@b.edu" });
+  assertFalse_(result.valid, "row with no updatable value is invalid");
+}
+
+function test_assertUserBatchRowLimit_over600() {
+  assertThrows_(function () {
+    assertUserBatchRowLimit_(601);
+  }, "600-row limit", "should enforce 600-row cap");
+  // 518 is the real-world promotion batch size and must be accepted.
+  assertUserBatchRowLimit_(518);
+  assertUserBatchRowLimit_(600);
+}
+
+function test_buildUserBatchDiff_classifies() {
+  const candidates = [
+    { rowNumber: 2, email: "same@x.edu", firstName: "A", lastName: "B" },
+    { rowNumber: 3, email: "change@x.edu", lastName: "6年一班01號" },
+    { rowNumber: 4, email: "gone@x.edu", lastName: "Z" }
+  ];
+  const states = {
+    "same@x.edu": { firstName: "A", lastName: "B", orgUnitPath: "/s", suspended: false },
+    "change@x.edu": { firstName: "C", lastName: "5年一班01號", orgUnitPath: "/s", suspended: false },
+    "gone@x.edu": null
+  };
+  const diff = buildUserBatchDiff_(candidates, states);
+  assertEqual_(diff.unchanged.length, 1, "one unchanged");
+  assertEqual_(diff.updates.length, 1, "one update");
+  assertEqual_(diff.missing.length, 1, "one missing");
+  assertEqual_(diff.updates[0].changes[0].field, "lastName", "field name");
+  assertEqual_(diff.updates[0].changes[0].from, "5年一班01號", "from value");
+  assertEqual_(diff.updates[0].changes[0].to, "6年一班01號", "to value");
+}
+
+function test_buildUserUpdatePayload_shapes() {
+  const payload = buildUserUpdatePayload_([
+    { field: "firstName", from: "a", to: "A" },
+    { field: "lastName", from: "b", to: "B" },
+    { field: "orgUnitPath", from: "/x", to: "/y" },
+    { field: "suspended", from: "false", to: "true" }
+  ]);
+  assertEqual_(payload.name.givenName, "A", "givenName");
+  assertEqual_(payload.name.familyName, "B", "familyName");
+  assertEqual_(payload.orgUnitPath, "/y", "orgUnitPath");
+  assertEqual_(payload.suspended, true, "suspended boolean");
+}
+
+function test_buildUserUpdatePayload_omitsUntouchedFields() {
+  const payload = buildUserUpdatePayload_([{ field: "orgUnitPath", from: "/x", to: "/y" }]);
+  assertTrue_(payload.name === undefined, "name must be absent when not changed");
+  assertTrue_(payload.suspended === undefined, "suspended must be absent when not changed");
+}
+
+function test_parseUserBatchFile_skipsDuplicatesAndInvalid() {
+  const content = [
+    "email,lastName",
+    "a@x.edu,6年一班01號",
+    "a@x.edu,6年一班02號",
+    "not-an-email,6年一班03號",
+    ",,"
+  ].join("\n");
+  const parsed = parseUserBatchFile_("t.csv", content);
+  assertEqual_(parsed.candidates.length, 1, "only first valid unique row kept");
+  assertEqual_(parsed.skipped.length, 2, "duplicate + invalid email skipped");
+}
+
+function test_executeUserBatchChunk_retriesOn429() {
+  let call = 0;
+  const deps = {
+    getToken: function () { return "tok"; },
+    sleep: function () {},
+    now: function () { return 0; },
+    fetchAll: function (requests) {
+      call++;
+      if (call === 1) {
+        return [
+          createSimpleHttpResponse_(200, "{}"),
+          createSimpleHttpResponse_(429, '{"error":{"message":"rate"}}')
+        ];
+      }
+      return [createSimpleHttpResponse_(200, "{}")];
+    }
+  };
+  const results = executeUserBatchChunk_([
+    { email: "a@x.edu", payload: {} },
+    { email: "b@x.edu", payload: {} }
+  ], deps);
+  assertEqual_(call, 2, "should retry once");
+  assertTrue_(results[0].ok, "first ok");
+  assertTrue_(results[1].ok, "second ok after retry");
+}
+
+function test_executeUserBatchChunk_reportsHardFailure() {
+  const deps = {
+    getToken: function () { return "tok"; },
+    sleep: function () {},
+    now: function () { return 0; },
+    fetchAll: function () { return [createSimpleHttpResponse_(404, '{"error":{"message":"Resource Not Found"}}')]; }
+  };
+  const results = executeUserBatchChunk_([{ email: "gone@x.edu", payload: {} }], deps);
+  assertFalse_(results[0].ok, "404 is a hard failure");
+  assertTrue_(String(results[0].message).indexOf("Not Found") !== -1, "message surfaced");
+}
+
+function test_getUserBatchTemplate_hasNoPasswordColumn() {
+  const csv = getUserBatchTemplate("csv");
+  const header = csv.content.split("\n")[0];
+  assertTrue_(header.indexOf("password") === -1 && header.indexOf("Password") === -1, "template must not contain a password column");
+  assertTrue_(header.indexOf("email") !== -1, "template has email");
+  const tsv = getUserBatchTemplate("tsv");
+  assertTrue_(tsv.content.split("\n")[0].indexOf("\t") !== -1, "tsv is tab separated");
+}
+
+/* ==================== v2.7.0: ROSTER + COURSE EDIT TESTS ==================== */
+
+function test_mapRosterBatchHeaderIndexes_requiresCourseRef() {
+  assertThrows_(function () {
+    mapRosterBatchHeaderIndexes_(["studentEmail"]);
+  }, "courseId column or a courseName", "needs a course reference");
+}
+
+function test_mapRosterBatchHeaderIndexes_acceptsCourseName() {
+  const map = mapRosterBatchHeaderIndexes_(["courseName", "section", "studentEmail"]);
+  assertEqual_(map.courseName, 0, "courseName");
+  assertEqual_(map.section, 1, "section");
+  assertEqual_(map.studentEmail, 2, "studentEmail");
+}
+
+function test_validateBatchRosterRow_invalidEmail() {
+  const result = validateBatchRosterRow_({ courseId: "1", studentEmail: "nope" });
+  assertFalse_(result.valid, "invalid email rejected");
+}
+
+function test_getCourseStudentBatchTemplate_csv() {
+  const res = getCourseStudentBatchTemplate("csv");
+  const header = res.content.split("\n")[0];
+  assertTrue_(header.indexOf("studentEmail") !== -1, "has studentEmail");
+  assertTrue_(header.indexOf("courseName") !== -1, "has courseName");
+}
+
+function test_previewCourseBulkEdit_rejectsBadField() {
+  assertThrows_(function () {
+    previewCourseBulkEdit(["1"], "ownerId", "SET", "x");
+  }, "Field must be one of", "only whitelisted fields allowed");
+}
+
+function test_previewCourseBulkEdit_rejectsEmptySelection() {
+  assertThrows_(function () {
+    previewCourseBulkEdit([], "section", "SET", "x");
+  }, "No courses selected", "requires a selection");
 }
