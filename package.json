@@ -1,0 +1,19 @@
+{
+  "name": "gas-proj",
+  "version": "1.0.0",
+  "description": "Google Apps Script Projects Monorepo Workspace",
+  "type": "module",
+  "scripts": {
+    "clasp": "clasp",
+    "clasp:login": "clasp login",
+    "clasp:logout": "clasp logout",
+    "clasp:status": "clasp status",
+    "push:admin": "npm run --prefix GAS-ADMIN push",
+    "pull:admin": "npm run --prefix GAS-ADMIN pull",
+    "push:photo-clips": "npm run --prefix gas-photo-clips push",
+    "pull:photo-clips": "npm run --prefix gas-photo-clips pull"
+  },
+  "devDependencies": {
+    "@google/clasp": "^3.4.1"
+  }
+}

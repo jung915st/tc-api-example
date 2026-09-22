@@ -61,3 +61,7 @@ __pycache__/
 *.so
 /cypress/screenshots/
 __screenshots__/
+
+# Clasp / Google Apps Script credentials
+.clasprc.json
+
