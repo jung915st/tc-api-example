@@ -3,7 +3,7 @@
 A Google Apps Script web app for Google Workspace for Education administrators:
 Classroom, Groups, Directory, Drive audit and bulk email — from one page.
 
-**Version 2.7.0** · Runtime V8 · Timezone Asia/Taipei
+**Version 2.8.0** · Runtime V8 · Timezone Asia/Taipei
 
 ---
 
@@ -20,8 +20,9 @@ Classroom, Groups, Directory, Drive audit and bulk email — from one page.
 | 7 | Lifecycle | Auto-delete accounts suspended for 3 months (daily trigger) |
 | 8 | Drive | Outdated-file audit with shared-drive sweep; batch delete / archive |
 | 9 | Email | HTML notifications with `{name}` / `{email}` variables |
+| 10 | **Course Materials** | One Drive materials container per course, granted once to the Classroom course group (shared drive or folder + shortcut) |
 
-Items 4–6 are new in 2.7.0.
+Items 4–6 are new in 2.7.0. Item 10 is new in 2.8.0.
 
 ---
 
@@ -128,10 +129,12 @@ API calls are dependency-injected — so the suite is safe to run in a live proj
 ## Project layout
 
 ```
-appsscript.json   manifest — advanced services, OAuth scopes, web app config
-code.gs           server-side: all features + helpers
-Index.html        single-page UI (Bootstrap 5) + client JS
-tests.gs          offline unit tests
+appsscript.json        manifest — advanced services, OAuth scopes, web app config (the only manifest)
+AdminSuite.gs          server-side: all features + helpers (loaded first, see filePushOrder)
+coursedrive.gs         server-side: course materials Drive provisioning (v2.8.0)
+index.html             single-page UI (Bootstrap 5) + client JS
+AdminSuite.tests.gs    offline unit tests
+tests_coursedrive.gs   offline unit tests for coursedrive.gs
 ```
 
 ## Pushing to GitHub
@@ -157,8 +160,8 @@ git add -A && git commit -m "..." && git push   # local -> GitHub
 node_modules/
 ```
 
-Commit `.clasp.json.example` instead:
+Commit `.clasp.json.example` instead; copy it to `.clasp.json` and fill in your script ID:
 
-```json
-{ "scriptId": "REPLACE_WITH_YOUR_SCRIPT_ID", "rootDir": "." }
+```bash
+cp .clasp.json.example .clasp.json
 ```

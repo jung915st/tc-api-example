@@ -1,7 +1,7 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.7.0
- * Updated: 2026-08-31 (Timezone UTC+8)
+ * Version: 2.8.0
+ * Updated: 2026-11-10 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
  * 1. Classroom: Create/Delete Courses, Add up to two Teachers, Manage (add/remove) teachers per course, Roster Students via OU, Batch Create (CSV/TSV)
@@ -30,6 +30,8 @@
  * 9. Classroom Roster Bulk Upload (v2.7.0): CSV/TSV enrolment by courseId or courseName+section.
  * 10. Course Bulk Edit (v2.7.0): set-value or find-and-replace on name / section / description
  *    across selected courses, with preview, via the Classroom multipart batch API.
+ * 11. Course Materials Drive Provisioning (v2.8.0, see coursedrive.gs / ADR-001): one materials
+ *    container per course (SHARED_DRIVE or SHORTCUT mode) granted once to the Classroom course group.
  */
 
 const APP_VERSION = "2.8.0";

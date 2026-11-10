@@ -1,0 +1,3 @@
+[submodule "gas-photo-clips"]
+	path = gas-photo-clips
+	url = https://github.com/jung915st/gas-photo-clips.git
