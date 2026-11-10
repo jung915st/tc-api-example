@@ -32,7 +32,7 @@
  *    across selected courses, with preview, via the Classroom multipart batch API.
  */
 
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.8.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -41,6 +41,7 @@ const CONFIG = {
   SHEET_NAME_GROUP_AUDIT: "Group_Audit_Logs",
   SHEET_NAME_EMAILS: "Email_Logs",
   SHEET_NAME_DRIVE_AUDIT: "Drive_Audit_Logs",
+  SHEET_NAME_COURSE_DRIVES: "Course_Drive_Map",
   PROP_SHEET_ID: "MANAGE_SPREADSHEET_ID"
 };
 
@@ -48,6 +49,10 @@ const COURSE_BATCH_CONFIG = {
   MAX_ROWS: 100,
   MAX_CALLS_PER_BATCH: 50,
   ENDPOINT: "https://classroom.googleapis.com/batch",
+  // Default batch target. v2.8.0 made the host/endpoint per-call so the same
+  // multipart helper can drive the Drive batch endpoint for course folder
+  // provisioning; Classroom call sites keep these defaults and are unchanged.
+  HOST: "classroom.googleapis.com",
   TEMPLATE_HEADERS: ["name", "section", "teacherEmail", "description"]
 };
 
@@ -878,24 +883,25 @@ function runCourseBatchPhases_(rows, batchExecutor) {
   return { createdRecords: createdRecords, errors: errors };
 }
 
-function executeBatchOperations_(operations, fetchFn) {
+function executeBatchOperations_(operations, fetchFn, options) {
   if (!operations || operations.length === 0) return [];
 
   const allResults = [];
   for (let i = 0; i < operations.length; i += COURSE_BATCH_CONFIG.MAX_CALLS_PER_BATCH) {
     const chunk = operations.slice(i, i + COURSE_BATCH_CONFIG.MAX_CALLS_PER_BATCH);
-    const chunkResults = executeBatchChunk_(chunk, fetchFn);
+    const chunkResults = executeBatchChunk_(chunk, fetchFn, options);
     allResults.push.apply(allResults, chunkResults);
   }
   return allResults;
 }
 
-function executeBatchChunk_(operations, fetchFn) {
+function executeBatchChunk_(operations, fetchFn, options) {
   const boundary = `batch_${Utilities.getUuid().replace(/-/g, "")}`;
   const payload = buildBatchMultipartRequest_(operations, boundary);
   const fetcher = fetchFn || UrlFetchApp.fetch;
+  const endpoint = (options && options.endpoint) || COURSE_BATCH_CONFIG.ENDPOINT;
 
-  const response = fetcher(COURSE_BATCH_CONFIG.ENDPOINT, {
+  const response = fetcher(endpoint, {
     method: "post",
     contentType: `multipart/mixed; boundary=${boundary}`,
     payload: payload,
@@ -973,7 +979,7 @@ function buildBatchMultipartRequest_(operations, boundary) {
     lines.push(`Content-ID: <${op.contentId}>`);
     lines.push("");
     lines.push(`${op.method} ${op.path} HTTP/1.1`);
-    lines.push("Host: classroom.googleapis.com");
+    lines.push(`Host: ${op.host || COURSE_BATCH_CONFIG.HOST}`);
     lines.push("Content-Type: application/json; charset=UTF-8");
     lines.push("Accept: application/json");
     lines.push("");

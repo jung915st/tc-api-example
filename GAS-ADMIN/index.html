@@ -105,6 +105,10 @@
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="drive-tab" data-bs-toggle="tab" data-bs-target="#drive" type="button">Drive Audit</button>
       </li>
+      <!-- v2.8.0: Course Materials Drive provisioning -->
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="coursedrive-tab" data-bs-toggle="tab" data-bs-target="#coursedrive" type="button" onclick="initCourseDriveTab()">Course Materials</button>
+      </li>
       <!-- Feature 6: Email Tab -->
       <li class="nav-item" role="presentation">
         <button class="nav-link" id="email-tab" data-bs-toggle="tab" data-bs-target="#email" type="button">Email Notify</button>
@@ -201,6 +205,16 @@
                     <button class="btn btn-outline-secondary btn-sm" onclick="downloadBatchTemplate('tsv')">
                       <i class="bi bi-download"></i> TSV Sample
                     </button>
+                  </div>
+                  <div class="col-12">
+                    <div class="form-check">
+                      <input class="form-check-input" type="checkbox" id="batchCourseProvisionDrive" checked
+                             onchange="this.dataset.userTouched = '1';">
+                      <label class="form-check-label small" for="batchCourseProvisionDrive">
+                        Also provision a course materials folder for each new course
+                        <span class="text-muted">(uses the mode set in <strong>Course Materials</strong>)</span>
+                      </label>
+                    </div>
                   </div>
                   <div class="col-12">
                     <small class="text-muted">
@@ -678,7 +692,146 @@
         </div>
       </div>
 
-      <!-- ==================== TAB 5: EMAIL NOTIFICATION (Feature 6) ==================== -->
+      <!-- ==================== TAB 5: COURSE MATERIALS (v2.8.0) ==================== -->
+      <div class="tab-pane fade" id="coursedrive" role="tabpanel">
+        <div class="row">
+
+          <!-- Left: provisioning -->
+          <div class="col-lg-8">
+            <div class="card mb-3">
+              <div class="card-header bg-white fw-bold text-primary">
+                <i class="bi bi-folder-plus"></i> Provision Course Materials Folders
+              </div>
+              <div class="card-body">
+                <p class="small text-muted">
+                  Creates one materials container per course and grants it to the course's
+                  Classroom group <strong>once</strong>. Students enrolled later inherit access
+                  automatically &mdash; nobody re-shares anything.
+                </p>
+
+                <div class="row g-2 align-items-end mb-3">
+                  <div class="col-md-5">
+                    <label class="form-label small text-muted mb-1">Mode for this run</label>
+                    <select id="courseDriveRunMode" class="form-select form-select-sm" onchange="invalidateCourseDrivePreview_()">
+                      <option value="">Use configured default</option>
+                      <option value="SHARED_DRIVE">SHARED_DRIVE — appears in Drive for desktop automatically</option>
+                      <option value="SHORTCUT">SHORTCUT — folder + per-student shortcut (needs delegation)</option>
+                    </select>
+                  </div>
+                  <div class="col-md-7 d-flex gap-2">
+                    <button class="btn btn-outline-secondary btn-sm" onclick="loadCourseDriveCourses()">
+                      <i class="bi bi-arrow-clockwise"></i> Reload Courses
+                    </button>
+                    <button class="btn btn-outline-primary btn-sm" onclick="previewCourseDrives()">
+                      <i class="bi bi-eye"></i> Preview
+                    </button>
+                    <button class="btn btn-primary btn-sm" id="applyCourseDriveBtn" onclick="applyCourseDrives()" disabled>
+                      <i class="bi bi-check2-circle"></i> Provision
+                    </button>
+                  </div>
+                </div>
+
+                <div class="alert alert-light border small py-2 mb-2">
+                  <strong>Teacher already made a folder?</strong> Paste its link or ID in the
+                  <em>Existing folder</em> column and use <strong>Adopt</strong> instead of Provision.
+                  Adoption registers that folder as the course container and adds the group grants &mdash;
+                  it creates nothing, moves nothing, and changes no ownership. Students who already made
+                  their own shortcut to it are left alone.
+                </div>
+
+                <div class="d-flex align-items-center gap-3 mb-2 flex-wrap">
+                  <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="courseDriveSelectAll" onclick="toggleAllCourseDriveChecks(this)">
+                    <label class="form-check-label small" for="courseDriveSelectAll">Select all</label>
+                  </div>
+                  <span class="small text-muted" id="courseDriveSelectionCount">0 selected</span>
+                  <div class="ms-auto d-flex gap-2">
+                    <button class="btn btn-outline-success btn-sm" onclick="previewCourseDriveAdopt()">
+                      <i class="bi bi-eye"></i> Preview Adopt
+                    </button>
+                    <button class="btn btn-success btn-sm" id="adoptCourseDriveBtn" onclick="applyCourseDriveAdopt()" disabled>
+                      <i class="bi bi-box-arrow-in-down"></i> Adopt
+                    </button>
+                  </div>
+                </div>
+                <div id="courseDriveAdoptStatus" class="small text-muted mb-2"></div>
+
+                <div class="table-responsive border rounded" style="max-height: 320px; overflow-y: auto;">
+                  <table class="table table-sm table-hover mb-0">
+                    <thead class="table-light sticky-top">
+                      <tr>
+                        <th style="width: 36px;"></th>
+                        <th>Course</th>
+                        <th>Section</th>
+                        <th>Materials folder</th>
+                        <th style="width: 210px;">Existing folder (adopt)</th>
+                      </tr>
+                    </thead>
+                    <tbody id="courseDriveTableBody">
+                      <tr><td colspan="5" class="text-center text-muted py-3">Click a tab reload to list active courses.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div id="courseDriveResult" class="mt-3 small text-muted">No preview run yet.</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Right: settings + maintenance -->
+          <div class="col-lg-4">
+            <div class="card mb-3">
+              <div class="card-header bg-white fw-bold"><i class="bi bi-gear"></i> Settings</div>
+              <div class="card-body">
+                <label class="form-label small text-muted mb-1">Default mode</label>
+                <select id="courseDriveDefaultMode" class="form-select form-select-sm mb-2">
+                  <option value="SHARED_DRIVE">SHARED_DRIVE (recommended)</option>
+                  <option value="SHORTCUT">SHORTCUT (fallback)</option>
+                </select>
+
+                <label class="form-label small text-muted mb-1">Root folder ID <span class="text-muted">(SHORTCUT mode only)</span></label>
+                <input type="text" id="courseDriveRootFolder" class="form-control form-control-sm mb-2" placeholder="Drive folder ID">
+
+                <div class="form-check mb-3">
+                  <input class="form-check-input" type="checkbox" id="courseDriveAutoProvision">
+                  <label class="form-check-label small" for="courseDriveAutoProvision">
+                    Tick the &ldquo;provision materials folder&rdquo; box by default on bulk course creation
+                  </label>
+                </div>
+
+                <button class="btn btn-outline-primary btn-sm w-100 mb-2" onclick="saveCourseDriveSettings()">
+                  <i class="bi bi-save"></i> Save Settings
+                </button>
+                <div id="courseDriveSettingsStatus" class="small text-muted"></div>
+              </div>
+            </div>
+
+            <div class="card mb-3">
+              <div class="card-header bg-white fw-bold"><i class="bi bi-wrench-adjustable"></i> Shortcut Maintenance</div>
+              <div class="card-body">
+                <p class="small text-muted mb-2">
+                  Only needed in SHORTCUT mode. A shortcut is a real file in the student's
+                  My&nbsp;Drive, so it can be renamed or deleted; the reconciler repairs drift and
+                  covers late enrolments.
+                </p>
+                <button class="btn btn-outline-secondary btn-sm w-100 mb-2" onclick="runCourseDriveReconcile()">
+                  <i class="bi bi-arrow-repeat"></i> Reconcile Now
+                </button>
+                <button class="btn btn-outline-secondary btn-sm w-100 mb-2" onclick="installCourseDriveTrigger()">
+                  <i class="bi bi-clock-history"></i> Install Hourly Trigger
+                </button>
+                <button class="btn btn-outline-danger btn-sm w-100" onclick="removeCourseDriveTrigger()">
+                  <i class="bi bi-trash"></i> Remove Trigger
+                </button>
+                <div id="courseDriveMaintenanceResult" class="small text-muted mt-2"></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ==================== TAB 6: EMAIL NOTIFICATION (Feature 6) ==================== -->
       <div class="tab-pane fade" id="email" role="tabpanel">
         <div class="row h-100">
             
@@ -888,6 +1041,12 @@
       
       // Load OUs for all dropdowns immediately on page load
       initOUs();
+
+      // v2.8.0: apply the saved course-materials default to the bulk-create
+      // checkbox even if the admin never opens the Course Materials tab.
+      google.script.run.withSuccessHandler(settings => {
+        applyAutoProvisionDefault_(!!settings.autoProvision);
+      }).withFailureHandler(() => {}).getCourseDriveSettings();
     };
 
     function setLoader(isLoading, text) {
@@ -1183,6 +1342,12 @@
         return alert("Only CSV or TSV files are supported.");
       }
 
+      // v2.8.0: '' means "use the configured default mode"; 'NONE' lets an admin
+      // create courses without touching Drive at all. Resolved here rather than
+      // inside the reader callback so the DOM read happens while the click is fresh.
+      const provisionToggle = document.getElementById('batchCourseProvisionDrive');
+      const provisionMode = (provisionToggle && provisionToggle.checked) ? '' : 'NONE';
+
       const reader = new FileReader();
       reader.onload = evt => {
         const content = evt.target.result || "";
@@ -1190,11 +1355,12 @@
         google.script.run.withSuccessHandler(result => {
           setLoader(false);
           renderBatchResult(result);
+          renderDriveProvisioningResult_(result.driveProvisioning);
           loadCourses();
         }).withFailureHandler(err => {
           setLoader(false);
           alert("Batch upload failed: " + err.message);
-        }).processBatchCourseUpload(file.name, content);
+        }).processBatchCourseUploadWithDrive(file.name, content, provisionMode);
       };
       reader.onerror = () => alert("Failed to read the selected file.");
       reader.readAsText(file);
@@ -1293,7 +1459,7 @@
           setLoader(false);
           alert("Archive failed: " + err.message);
         })
-        .archiveClassroomCourses(ids);
+        .archiveClassroomCoursesWithDrive(ids);
     }
 
     function deleteSelectedActiveCourses() {
@@ -1311,7 +1477,7 @@
           setLoader(false);
           alert("Delete failed: " + err.message);
         })
-        .deleteClassroomCourses(ids);
+        .deleteClassroomCoursesWithDrive(ids);
     }
 
     function loadArchivedCourses() {
@@ -1366,7 +1532,7 @@
           setLoader(false);
           alert("Delete failed: " + err.message);
         })
-        .deleteClassroomCourses(ids);
+        .deleteClassroomCoursesWithDrive(ids);
     }
 
     function renderBatchCourseResult_(result, boxId, verb) {
@@ -1498,7 +1664,7 @@
       setLoader(true, `Applying changes (${toEnroll.length} enroll, ${toRemove.length} remove)...`);
       google.script.run.withSuccessHandler(res => {
         setLoader(false);
-        alert(res.message);
+        alert(res.message + formatDriveSyncNote_(res.driveSync));
         // Update local cache to reflect new state
         if (enrolledEmailsCache_ instanceof Set) {
           toEnroll.forEach(e => enrolledEmailsCache_.add(e));
@@ -1507,7 +1673,7 @@
       }).withFailureHandler(err => {
         setLoader(false);
         alert("Error: " + err.message);
-      }).applyEnrollmentChanges(courseId, toEnroll, toRemove);
+      }).applyEnrollmentChangesWithDrive(courseId, toEnroll, toRemove);
     }
 
     // --- GROUP & MEMBER MANAGEMENT FUNCTIONS ---
@@ -1960,10 +2126,11 @@
         google.script.run.withSuccessHandler(result => {
           setLoader(false);
           renderRosterBatchResult(result);
+          renderRosterDriveSync_(result.driveSync);
         }).withFailureHandler(err => {
           setLoader(false);
           alert("Roster upload failed: " + err.message);
-        }).processBatchCourseStudentUpload(file.name, evt.target.result || "");
+        }).processBatchCourseStudentUploadWithDrive(file.name, evt.target.result || "");
       };
       reader.onerror = () => alert("Failed to read the selected file.");
       reader.readAsText(file);
@@ -2204,6 +2371,428 @@
             alert("Email Error: " + err.message);
         }).sendCustomEmailBatch(recipients, subject, body);
     }
+
+    /* ==================== v2.8.0: COURSE MATERIALS DRIVE ==================== */
+
+    // Apply stays disabled until a preview runs, matching the bulk-user-update
+    // contract. The server recomputes anyway, so a stale preview cannot
+    // provision the wrong thing — this gate is about intent, not safety.
+    let courseDrivePreviewOk_ = false;
+    let courseDrivePreviewMode_ = '';
+    let courseDriveAdoptPreviewOk_ = false;
+
+    /**
+     * Keeps the bulk-create checkbox honest: the setting is what it defaults to,
+     * and the admin can still override it per upload.
+     */
+    function applyAutoProvisionDefault_(autoProvision) {
+      const box = document.getElementById('batchCourseProvisionDrive');
+      if (box && !box.dataset.userTouched) box.checked = autoProvision;
+    }
+
+    function initCourseDriveTab() {
+      loadCourseDriveSettings();
+      loadCourseDriveCourses();
+    }
+
+    function loadCourseDriveSettings() {
+      google.script.run.withSuccessHandler(settings => {
+        document.getElementById('courseDriveDefaultMode').value = settings.defaultMode;
+        document.getElementById('courseDriveRootFolder').value = settings.rootFolderId || '';
+        document.getElementById('courseDriveAutoProvision').checked = !!settings.autoProvision;
+        applyAutoProvisionDefault_(!!settings.autoProvision);
+        const status = document.getElementById('courseDriveSettingsStatus');
+        status.innerHTML = settings.delegationConfigured
+          ? '<span class="text-success">Delegation service account configured — SHORTCUT mode available.</span>'
+          : '<span class="text-warning">No delegation service account. SHORTCUT mode is unavailable; SHARED_DRIVE mode works regardless.</span>';
+      }).withFailureHandler(err => {
+        document.getElementById('courseDriveSettingsStatus').innerHTML =
+          `<span class="text-danger">${escapeHtml(err.message)}</span>`;
+      }).getCourseDriveSettings();
+    }
+
+    function saveCourseDriveSettings() {
+      const payload = {
+        defaultMode: document.getElementById('courseDriveDefaultMode').value,
+        rootFolderId: document.getElementById('courseDriveRootFolder').value.trim(),
+        autoProvision: document.getElementById('courseDriveAutoProvision').checked
+      };
+      setLoader(true, 'Saving settings...');
+      google.script.run.withSuccessHandler(() => {
+        setLoader(false);
+        loadCourseDriveSettings();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert('Failed to save settings: ' + err.message);
+      }).setCourseDriveSettings(payload);
+    }
+
+    function loadCourseDriveCourses() {
+      const tbody = document.getElementById('courseDriveTableBody');
+      tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">Loading...</td></tr>';
+      invalidateCourseDrivePreview_();
+      invalidateCourseDriveAdoptPreview_();
+
+      google.script.run.withSuccessHandler(courses => {
+        if (!courses || courses.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-3">No active courses.</td></tr>';
+          return;
+        }
+        google.script.run.withSuccessHandler(statuses => {
+          const byId = {};
+          (statuses || []).forEach(item => { byId[String(item.courseId)] = item; });
+          tbody.innerHTML = courses.map(c => {
+            const status = byId[String(c.id)];
+            return `
+              <tr>
+                <td><input class="form-check-input coursedrive-check" type="checkbox" value="${escapeHtml(c.id)}"
+                     onchange="updateCourseDriveSelectionCount()"></td>
+                <td><strong>${escapeHtml(c.name)}</strong></td>
+                <td>${escapeHtml(c.section || '')}</td>
+                <td>${renderCourseDriveStatusCell_(status)}</td>
+                <td>${renderAdoptInputCell_(c.id, status)}</td>
+              </tr>`;
+          }).join('');
+          updateCourseDriveSelectionCount();
+        }).withFailureHandler(() => {
+          // Registry unavailable (e.g. spreadsheet not configured) — still let the
+          // admin select courses rather than blocking the whole tab.
+          tbody.innerHTML = courses.map(c => `
+            <tr>
+              <td><input class="form-check-input coursedrive-check" type="checkbox" value="${escapeHtml(c.id)}"
+                   onchange="updateCourseDriveSelectionCount()"></td>
+              <td><strong>${escapeHtml(c.name)}</strong></td>
+              <td>${escapeHtml(c.section || '')}</td>
+              <td><span class="text-muted small">unknown</span></td>
+              <td>${renderAdoptInputCell_(c.id, null)}</td>
+            </tr>`).join('');
+          updateCourseDriveSelectionCount();
+        }).getCourseDriveStatus(courses.map(c => String(c.id)));
+      }).withFailureHandler(err => {
+        tbody.innerHTML = `<tr><td colspan="5" class="text-danger">Error: ${escapeHtml(err.message)}</td></tr>`;
+      }).listCourses();
+    }
+
+    function renderCourseDriveStatusCell_(status) {
+      if (!status || status.state === 'NONE') {
+        return '<span class="badge bg-secondary">not provisioned</span>';
+      }
+      const badges = {
+        ACTIVE: 'bg-success',
+        PENDING: 'bg-warning text-dark',
+        FAILED: 'bg-danger',
+        ARCHIVED: 'bg-secondary'
+      };
+      const badge = `<span class="badge ${badges[status.state] || 'bg-secondary'}">${escapeHtml(status.state)}</span>`;
+      const mode = status.mode ? ` <span class="text-muted small">${escapeHtml(status.mode)}</span>` : '';
+      const link = status.folderUrl
+        ? ` <a href="${escapeHtml(status.folderUrl)}" target="_blank" rel="noopener">open</a>`
+        : '';
+      return badge + mode + link;
+    }
+
+    function toggleAllCourseDriveChecks(source) {
+      document.querySelectorAll('.coursedrive-check').forEach(el => { el.checked = source.checked; });
+      updateCourseDriveSelectionCount();
+    }
+
+    function updateCourseDriveSelectionCount() {
+      const count = getCheckedValues('.coursedrive-check').length;
+      document.getElementById('courseDriveSelectionCount').textContent = `${count} selected`;
+      invalidateCourseDrivePreview_();
+    }
+
+    function invalidateCourseDrivePreview_() {
+      courseDrivePreviewOk_ = false;
+      const btn = document.getElementById('applyCourseDriveBtn');
+      if (btn) btn.disabled = true;
+    }
+
+    function previewCourseDrives() {
+      const ids = getCheckedValues('.coursedrive-check');
+      if (ids.length === 0) return alert('Select at least one course.');
+      const mode = document.getElementById('courseDriveRunMode').value;
+
+      setLoader(true, `Previewing ${ids.length} course(s)...`);
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        renderCourseDrivePreview_(result);
+        courseDrivePreviewOk_ = result.summary.toProvision > 0;
+        courseDrivePreviewMode_ = result.mode;
+        document.getElementById('applyCourseDriveBtn').disabled = !courseDrivePreviewOk_;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        invalidateCourseDrivePreview_();
+        document.getElementById('courseDriveResult').innerHTML =
+          `<div class="alert alert-danger mb-0">${escapeHtml(err.message)}</div>`;
+      }).previewCourseDriveProvisioning(ids, mode);
+    }
+
+    function renderCourseDrivePreview_(result) {
+      const s = result.summary;
+      const rows = result.rows.map(row => {
+        const cls = { PROVISION: 'text-success', SKIP: 'text-muted', BLOCKED: 'text-warning', ERROR: 'text-danger' }[row.action] || '';
+        return `<tr>
+            <td>${escapeHtml(row.courseName || row.courseId)}</td>
+            <td>${escapeHtml(row.section || '')}</td>
+            <td class="${cls}"><strong>${escapeHtml(row.action)}</strong></td>
+            <td class="small">${escapeHtml(row.reason || row.targetName || '')}</td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('courseDriveResult').innerHTML = `
+        <div class="alert alert-info mb-0">
+          <strong>Preview (${escapeHtml(result.mode)})</strong> &mdash;
+          to provision: <strong>${s.toProvision}</strong> &middot;
+          already done: ${s.skipped} &middot;
+          blocked: ${s.blocked} &middot;
+          errors: ${s.failed}
+          <div class="table-responsive mt-2 batch-result-scroll">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Course</th><th>Section</th><th>Action</th><th>Detail</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    function applyCourseDrives() {
+      if (!courseDrivePreviewOk_) return alert('Run a preview first.');
+      const ids = getCheckedValues('.coursedrive-check');
+      if (ids.length === 0) return alert('Select at least one course.');
+      if (!confirm(`Provision materials folders for ${ids.length} course(s) in ${courseDrivePreviewMode_} mode?`)) return;
+
+      setLoader(true, `Provisioning ${ids.length} course(s)...`);
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        renderDriveProvisioningResult_(result, 'courseDriveResult');
+        invalidateCourseDrivePreview_();
+        loadCourseDriveCourses();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        document.getElementById('courseDriveResult').innerHTML =
+          `<div class="alert alert-danger mb-0">${escapeHtml(err.message)}</div>`;
+        // Send the mode the preview was computed for, not the current dropdown
+        // value — the two can only differ if the select changed, and that path
+        // already clears the preview gate.
+      }).provisionCourseDrives(ids, courseDrivePreviewMode_);
+    }
+
+    /**
+     * Shared by the Course Materials tab and the bulk-create card. Defaults to
+     * appending under the batch-create result so provisioning outcomes show up
+     * right where the courses were created.
+     */
+    function renderDriveProvisioningResult_(result, targetId) {
+      const el = document.getElementById(targetId || 'batchCourseResult');
+      if (!el || !result) return;
+      if (result.skippedReason) return;
+      if (result.error) {
+        el.insertAdjacentHTML('beforeend',
+          `<div class="alert alert-danger mt-2 mb-0">Materials folders: ${escapeHtml(result.error)}</div>`);
+        return;
+      }
+
+      const cls = (result.errors && result.errors.length) ? 'alert-warning' : 'alert-success';
+      const shortcut = result.shortcutSync
+        ? `<br>Shortcuts: created ${result.shortcutSync.created}, repaired ${result.shortcutSync.repaired}, ` +
+          `already present ${result.shortcutSync.skipped}, failed ${result.shortcutSync.failed}`
+        : '';
+      const html = `
+        <div class="alert ${cls} mt-2 mb-0">
+          <strong>Materials folders (${escapeHtml(result.mode || '')})</strong><br>
+          Provisioned: <strong>${(result.provisioned || []).length}</strong> &middot;
+          Skipped: ${(result.skipped || []).length} &middot;
+          Failed: ${(result.errors || []).length}${shortcut}
+          ${renderIssueList_('Skipped', result.skipped, i => `${i.courseName || i.courseId}: ${i.reason}`)}
+          ${renderIssueList_('Errors', result.errors, i => `${i.courseId}: ${i.message}`)}
+        </div>`;
+      if (targetId) el.innerHTML = html; else el.insertAdjacentHTML('beforeend', html);
+    }
+
+    /** One honest line appended to the enrolment alert. */
+    function formatDriveSyncNote_(sync) {
+      if (!sync) return '';
+      if (sync.error) return `\n\nMaterials folder sync failed: ${sync.error}`;
+      if (sync.mode === 'SHORTCUT') {
+        return `\n\nMaterials shortcuts: created ${sync.created}, repaired ${sync.repaired}, ` +
+          `already present ${sync.skipped}, failed ${sync.failed}`;
+      }
+      return `\n\n${sync.message || ''}`;
+    }
+
+    function renderRosterDriveSync_(sync) {
+      const el = document.getElementById('batchRosterResult');
+      if (!el || !sync) return;
+      const text = sync.error
+        ? `Materials folder sync failed: ${sync.error}`
+        : (sync.mode === 'SHORTCUT'
+            ? `Materials shortcuts: created ${sync.created}, repaired ${sync.repaired}, already present ${sync.skipped}, failed ${sync.failed}`
+            : (sync.message || ''));
+      if (!text) return;
+      const cls = sync.error || sync.failed ? 'alert-warning' : 'alert-secondary';
+      el.insertAdjacentHTML('beforeend', `<div class="alert ${cls} mt-2 mb-0 small">${escapeHtml(text)}</div>`);
+    }
+
+    /**
+     * A course that already has a container has nothing to adopt, so the input is
+     * not offered rather than offered and then refused server-side.
+     */
+    function renderAdoptInputCell_(courseId, status) {
+      if (status && status.state === 'ACTIVE') {
+        return '<span class="text-muted small">already linked</span>';
+      }
+      return `<input type="text" class="form-control form-control-sm coursedrive-adopt"
+                data-course-id="${escapeHtml(courseId)}" placeholder="folder link or ID"
+                oninput="invalidateCourseDriveAdoptPreview_()">`;
+    }
+
+    function collectAdoptionEntries_() {
+      const entries = [];
+      document.querySelectorAll('.coursedrive-adopt').forEach(el => {
+        const value = el.value.trim();
+        if (!value) return;
+        entries.push({ courseId: el.dataset.courseId, folderId: value });
+      });
+      return entries;
+    }
+
+    function invalidateCourseDriveAdoptPreview_() {
+      courseDriveAdoptPreviewOk_ = false;
+      const btn = document.getElementById('adoptCourseDriveBtn');
+      if (btn) btn.disabled = true;
+      setCourseDriveAdoptStatus_('');
+    }
+
+    /**
+     * The Adopt button starts disabled and a disabled Bootstrap button looks
+     * almost identical to an enabled one, so a preview that finds nothing to do
+     * reads as "the button is broken". Say what happened in words, right here.
+     */
+    function setCourseDriveAdoptStatus_(html) {
+      const el = document.getElementById('courseDriveAdoptStatus');
+      if (el) el.innerHTML = html || '';
+    }
+
+    function previewCourseDriveAdopt() {
+      const entries = collectAdoptionEntries_();
+      if (entries.length === 0) {
+        return alert('Paste at least one existing folder link or ID in the "Existing folder (adopt)" column.');
+      }
+      setLoader(true, `Checking ${entries.length} folder(s)...`);
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        renderAdoptionPreview_(result);
+        courseDriveAdoptPreviewOk_ = result.summary.toAdopt > 0;
+        document.getElementById('adoptCourseDriveBtn').disabled = !courseDriveAdoptPreviewOk_;
+        if (courseDriveAdoptPreviewOk_) {
+          setCourseDriveAdoptStatus_(
+            `<span class="text-success">Ready to adopt ${result.summary.toAdopt} folder(s) — click <strong>Adopt</strong>.</span>`);
+        } else {
+          const firstReason = (result.rows || []).map(r => r.reason).filter(Boolean)[0] || '';
+          setCourseDriveAdoptStatus_(
+            `<span class="text-warning-emphasis"><strong>Nothing can be adopted, so Adopt stays disabled.</strong> ` +
+            `${escapeHtml(firstReason)} See the table below for every row.</span>`);
+        }
+      }).withFailureHandler(err => {
+        setLoader(false);
+        invalidateCourseDriveAdoptPreview_();
+        document.getElementById('courseDriveResult').innerHTML =
+          `<div class="alert alert-danger mb-0">${escapeHtml(err.message)}</div>`;
+      }).previewCourseDriveAdoption(entries);
+    }
+
+    function renderAdoptionPreview_(result) {
+      const s = result.summary;
+      const rows = result.rows.map(row => {
+        const cls = { ADOPT: 'text-success', SKIP: 'text-muted', BLOCKED: 'text-warning', ERROR: 'text-danger' }[row.action] || '';
+        return `<tr>
+            <td>${escapeHtml(row.courseName || row.courseId)}</td>
+            <td>${escapeHtml(row.folderName || row.folderId || '')}</td>
+            <td>${escapeHtml(row.mode || '')}</td>
+            <td class="${cls}"><strong>${escapeHtml(row.action)}</strong></td>
+            <td class="small">${escapeHtml(row.reason || '')}${
+              row.warning ? `<div class="text-warning-emphasis mt-1">${escapeHtml(row.warning)}</div>` : ''
+            }</td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('courseDriveResult').innerHTML = `
+        <div class="alert alert-info mb-0">
+          <strong>Adoption preview</strong> &mdash;
+          to adopt: <strong>${s.toAdopt}</strong> &middot;
+          already linked: ${s.skipped} &middot;
+          blocked: ${s.blocked} &middot;
+          errors: ${s.failed}
+          <div class="table-responsive mt-2 batch-result-scroll">
+            <table class="table table-sm mb-0">
+              <thead><tr><th>Course</th><th>Folder</th><th>Mode</th><th>Action</th><th>Detail</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    function applyCourseDriveAdopt() {
+      if (!courseDriveAdoptPreviewOk_) return alert('Run "Preview Adopt" first.');
+      const entries = collectAdoptionEntries_();
+      if (entries.length === 0) return alert('Nothing to adopt.');
+      if (!confirm(
+        `Adopt ${entries.length} existing folder(s)?\n\n` +
+        'Nothing is created, moved or deleted. Each folder is registered as its ' +
+        'course container and granted to the Classroom course group.')) return;
+
+      setLoader(true, `Adopting ${entries.length} folder(s)...`);
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        renderDriveProvisioningResult_(result, 'courseDriveResult');
+        invalidateCourseDriveAdoptPreview_();
+        setCourseDriveAdoptStatus_(`<span class="text-success">${escapeHtml(result.message || 'Done.')}</span>`);
+        loadCourseDriveCourses();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        document.getElementById('courseDriveResult').innerHTML =
+          `<div class="alert alert-danger mb-0">${escapeHtml(err.message)}</div>`;
+      }).adoptCourseDriveFolders(entries);
+    }
+
+    function runCourseDriveReconcile() {
+      setLoader(true, 'Reconciling shortcuts...');
+      google.script.run.withSuccessHandler(result => {
+        setLoader(false);
+        document.getElementById('courseDriveMaintenanceResult').innerHTML =
+          `<div class="alert ${result.failed ? 'alert-warning' : 'alert-success'} mb-0 small">${escapeHtml(result.message)}</div>`;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        document.getElementById('courseDriveMaintenanceResult').innerHTML =
+          `<div class="alert alert-danger mb-0 small">${escapeHtml(err.message)}</div>`;
+      }).reconcileCourseShortcuts({});
+    }
+
+    function installCourseDriveTrigger() {
+      setLoader(true, 'Installing trigger...');
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        document.getElementById('courseDriveMaintenanceResult').innerHTML =
+          `<div class="alert alert-success mb-0 small">${escapeHtml(msg)}</div>`;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert('Failed to install trigger: ' + err.message);
+      }).installCourseDriveReconcileTrigger();
+    }
+
+    function removeCourseDriveTrigger() {
+      setLoader(true, 'Removing trigger...');
+      google.script.run.withSuccessHandler(msg => {
+        setLoader(false);
+        document.getElementById('courseDriveMaintenanceResult').innerHTML =
+          `<div class="alert alert-secondary mb-0 small">${escapeHtml(msg)}</div>`;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert('Failed to remove trigger: ' + err.message);
+      }).removeCourseDriveReconcileTrigger();
+    }
+
   </script>
 </body>
 </html>
