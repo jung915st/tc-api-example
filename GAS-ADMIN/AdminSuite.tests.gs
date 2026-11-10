@@ -79,7 +79,17 @@ function runBatchCourseUnitTests() {
     test_listDomainSharedDrives_reportsEnumerationFailure,
     test_chineseNumeralToInt_basic,
     test_buildUserSortKey_ordersByClassThenNumber,
-    test_buildUserSortKey_handlesMissingName
+    test_buildUserSortKey_handlesMissingName,
+    test_parseStudentClassName_quotedPrefixFromAccountName,
+    test_parseStudentClassName_variants,
+    test_groupUsersByClassName_ordersClassesAndKeepsEveryone,
+    test_groupUsersByClassName_mergesNumeralSpellings,
+    test_transferCourseOwnership_noopWhenAlreadyOwner,
+    test_transferCourseOwnership_rejectsStaleExpectedOwner,
+    test_transferCourseOwnership_addsTeacherThenPatches,
+    test_transferCourseOwnership_compensatesWhenPatchFails,
+    test_transferCourseOwnership_keepsPreexistingTeacherOnFailure,
+    test_transferCourseOwnership_rejectsInvalidTarget
   ];
 
   let passCount = 0;
@@ -1079,6 +1089,166 @@ function test_buildUserSortKey_ordersByClassThenNumber() {
 function test_buildUserSortKey_handlesMissingName() {
   assertEqual_(buildUserSortKey_(""), "", "Empty name -> empty key.");
   assertEqual_(buildUserSortKey_(null), "", "Null name -> empty key.");
+}
+
+/* ---------- v2.9.0: class-name grouping ---------- */
+
+function test_parseStudentClassName_quotedPrefixFromAccountName() {
+  const parsed = parseStudentClassName_('"6年一班"01號錢豐睿');
+  assertTrue_(parsed !== null, "Quoted class prefix must parse.");
+  assertEqual_(parsed.className, "6年一班", "className");
+  assertEqual_(parsed.grade, 6, "grade");
+  assertEqual_(parsed.classNo, 1, "classNo");
+  assertEqual_(parsed.seatNo, 1, "seatNo");
+  assertEqual_(parsed.personName, "錢豐睿", "personName");
+}
+
+function test_parseStudentClassName_variants() {
+  const arabic = parseStudentClassName_("6年1班02號王小明");
+  assertEqual_(arabic.classNo, 1, "Arabic class number");
+  assertEqual_(arabic.seatNo, 2, "Arabic seat");
+
+  const chinese = parseStudentClassName_("六年十二班03號李大同");
+  assertEqual_(chinese.grade, 6, "Chinese grade");
+  assertEqual_(chinese.classNo, 12, "十二 -> 12");
+
+  const fullWidth = parseStudentClassName_("６年一班０４號陳小美");
+  assertTrue_(fullWidth !== null, "Full-width digits must parse.");
+  assertEqual_(fullWidth.seatNo, 4, "Full-width seat");
+
+  const bracketed = parseStudentClassName_("「5年三班」10號林");
+  assertEqual_(bracketed.className, "5年三班", "Corner-bracketed prefix");
+
+  const noSeat = parseStudentClassName_("6年一班錢豐睿");
+  assertEqual_(noSeat.seatNo, null, "Missing seat -> null");
+  assertEqual_(noSeat.personName, "錢豐睿", "Name without seat");
+
+  assertEqual_(parseStudentClassName_("王老師"), null, "Teacher name does not parse.");
+  assertEqual_(parseStudentClassName_(""), null, "Empty name does not parse.");
+  assertEqual_(parseStudentClassName_(null), null, "Null name does not parse.");
+}
+
+function test_groupUsersByClassName_ordersClassesAndKeepsEveryone() {
+  const users = [
+    { name: "6年二班01號乙", email: "b1@x.edu" },
+    { name: '"6年一班"10號丙', email: "a10@x.edu" },
+    { name: "6年十班01號丁", email: "j1@x.edu" },
+    { name: '"6年一班"02號甲', email: "a2@x.edu", suspended: true },
+    { name: "Teacher Lin", email: "lin@x.edu" },
+    { name: "5年三班05號戊", email: "c5@x.edu" },
+    { name: '"6年一班"01號錢豐睿', email: "A1@x.edu" }
+  ];
+  const groups = groupUsersByClassName_(users);
+  assertEqual_(groups.map(g => g.className).join("|"),
+    "5年三班|6年一班|6年二班|6年十班|" + STUDENT_CLASS_OTHER_LABEL,
+    "Classes ordered by grade then class number; unparsed last");
+
+  const classOne = groups[1];
+  assertEqual_(classOne.students.map(s => s.seatNo).join(","), "1,2,10", "Account-name ascending (natural) inside class");
+  assertEqual_(classOne.students[0].email, "a1@x.edu", "Emails lower-cased");
+  assertTrue_(classOne.students[1].suspended, "Suspended flag preserved (account stays visible)");
+
+  const total = groups.reduce((n, g) => n + g.count, 0);
+  assertEqual_(total, users.length, "Every user appears exactly once");
+  assertTrue_(groups[groups.length - 1].unparsed, "Other group flagged unparsed");
+}
+
+function test_groupUsersByClassName_mergesNumeralSpellings() {
+  const groups = groupUsersByClassName_([
+    { name: "6年1班03號甲", email: "a@x.edu" },
+    { name: "6年一班01號乙", email: "b@x.edu" }
+  ]);
+  assertEqual_(groups.length, 1, "6年1班 and 6年一班 are the same class");
+  assertEqual_(groups[0].count, 2, "Both students in the merged group");
+  assertEqual_(groups[0].className, "6年一班", "Label from the lowest-sorted student");
+}
+
+/* ---------- v2.9.0: course ownership transfer ---------- */
+
+function createFakeOwnershipDeps_(options) {
+  const opts = options || {};
+  const calls = { addTeacher: [], removeTeacher: [], patchOwner: [], updateSheet: [], log: [] };
+  const deps = {
+    getCourse: function () { return { id: "C1", ownerId: opts.ownerId || "100" }; },
+    getUserProfile: function (key) {
+      if (opts.profileError) throw opts.profileError;
+      return { id: opts.targetId || "200", emailAddress: opts.targetEmail || "new.owner@x.edu" };
+    },
+    getTeacher: function () {
+      if (opts.isTeacher) return { userId: opts.targetId || "200" };
+      const err = new Error("Requested entity was not found.");
+      err.details = { code: 404, message: "Requested entity was not found." };
+      throw err;
+    },
+    addTeacher: function (courseId, key) { calls.addTeacher.push(key); return {}; },
+    removeTeacher: function (courseId, userId) { calls.removeTeacher.push(userId); return {}; },
+    patchOwner: function (courseId, ownerId) {
+      calls.patchOwner.push(ownerId);
+      if (opts.patchError) throw opts.patchError;
+      return { id: courseId, ownerId: ownerId };
+    },
+    updateSheet: function (courseId, ownerId) { calls.updateSheet.push(ownerId); return true; },
+    log: function (action, target, status) { calls.log.push(`${action}:${status}`); }
+  };
+  return { deps: deps, calls: calls };
+}
+
+function test_transferCourseOwnership_noopWhenAlreadyOwner() {
+  const fake = createFakeOwnershipDeps_({ ownerId: "200", targetId: "200" });
+  const result = transferCourseOwnership_("C1", "new.owner@x.edu", "200", fake.deps);
+  assertFalse_(result.changed, "Same owner -> no change");
+  assertEqual_(fake.calls.patchOwner.length, 0, "No patch when already owner");
+  assertEqual_(fake.calls.addTeacher.length, 0, "No teacher add when already owner");
+}
+
+function test_transferCourseOwnership_rejectsStaleExpectedOwner() {
+  const fake = createFakeOwnershipDeps_({ ownerId: "999" });
+  assertThrows_(function () {
+    transferCourseOwnership_("C1", "new.owner@x.edu", "100", fake.deps);
+  }, "已被其他操作變更", "Stale expectedOwnerId must be refused");
+  assertEqual_(fake.calls.patchOwner.length, 0, "Nothing patched on stale owner");
+}
+
+function test_transferCourseOwnership_addsTeacherThenPatches() {
+  const fake = createFakeOwnershipDeps_({ ownerId: "100", targetId: "200" });
+  const result = transferCourseOwnership_("C1", "new.owner@x.edu", "100", fake.deps);
+  assertTrue_(result.changed, "Ownership changed");
+  assertTrue_(result.addedAsTeacher, "Target was added as teacher first");
+  assertEqual_(fake.calls.addTeacher[0], "new.owner@x.edu", "Teacher added by email");
+  assertEqual_(fake.calls.patchOwner[0], "200", "Patched with resolved userId");
+  assertEqual_(fake.calls.updateSheet[0], "200", "Sheet owner column updated");
+  assertEqual_(result.previousOwnerId, "100", "Previous owner reported");
+  assertTrue_(fake.calls.log.indexOf("TRANSFER_COURSE_OWNER:SUCCESS") !== -1, "Success logged");
+}
+
+function test_transferCourseOwnership_compensatesWhenPatchFails() {
+  const patchError = new Error("Precondition check failed.");
+  patchError.details = { code: 400, message: "Precondition check failed." };
+  const fake = createFakeOwnershipDeps_({ ownerId: "100", targetId: "200", patchError: patchError });
+  assertThrows_(function () {
+    transferCourseOwnership_("C1", "new.owner@x.edu", "100", fake.deps);
+  }, "擁有者轉移失敗", "Patch failure surfaces");
+  assertEqual_(fake.calls.removeTeacher.length, 1, "Teacher we added is removed again");
+  assertEqual_(fake.calls.removeTeacher[0], "200", "Removed by userId");
+  assertEqual_(fake.calls.updateSheet.length, 0, "Sheet untouched on failure");
+}
+
+function test_transferCourseOwnership_keepsPreexistingTeacherOnFailure() {
+  const patchError = new Error("Precondition check failed.");
+  patchError.details = { code: 400 };
+  const fake = createFakeOwnershipDeps_({ ownerId: "100", targetId: "200", isTeacher: true, patchError: patchError });
+  assertThrows_(function () {
+    transferCourseOwnership_("C1", "new.owner@x.edu", "", fake.deps);
+  }, "擁有者轉移失敗", "Patch failure surfaces");
+  assertEqual_(fake.calls.addTeacher.length, 0, "Existing teacher is not re-added");
+  assertEqual_(fake.calls.removeTeacher.length, 0, "Pre-existing teacher must never be removed");
+}
+
+function test_transferCourseOwnership_rejectsInvalidTarget() {
+  const fake = createFakeOwnershipDeps_({});
+  assertThrows_(function () { transferCourseOwnership_("C1", "me", "", fake.deps); }, "請指定新的課程擁有者", "'me' rejected");
+  assertThrows_(function () { transferCourseOwnership_("C1", "not an email", "", fake.deps); }, "格式無效", "Garbage rejected");
+  assertThrows_(function () { transferCourseOwnership_("", "a@x.edu", "", fake.deps); }, "Course ID required", "Course required");
 }
 
 function assertTrue_(condition, message) {

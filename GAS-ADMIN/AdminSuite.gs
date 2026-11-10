@@ -1,6 +1,6 @@
 /**
  * Project: Domain Admin Suite
- * Version: 2.8.0
+ * Version: 2.9.0
  * Updated: 2026-11-10 (Timezone UTC+8)
  * Description: Comprehensive Admin System (Classroom, Groups, Directory, Drive, Email).
  * * CORE FEATURES:
@@ -32,9 +32,16 @@
  *    across selected courses, with preview, via the Classroom multipart batch API.
  * 11. Course Materials Drive Provisioning (v2.8.0, see coursedrive.gs / ADR-001): one materials
  *    container per course (SHARED_DRIVE or SHORTCUT mode) granted once to the Classroom course group.
+ * 12. Course Ownership Transfer (v2.9.0): make a selected teacher the course owner (optimistic
+ *    concurrency check, teacher pre-add with compensation on failure).
+ * 13. Class-grouped student pickers (v2.9.0): students grouped by the class prefix of their account
+ *    name (e.g. "6年一班"01號…), sorted by account name; whole-class selection.
+ * 14. Per-student email attachments (v2.9.0, see emailattach.gs): merged Student Photo Email
+ *    Dispatch — Drive folder files matched to each recipient, mandatory preview, resumable
+ *    duplicate-safe sending ledger in Email_Logs.
  */
 
-const APP_VERSION = "2.8.0";
+const APP_VERSION = "2.9.0";
 const CONFIG = {
   TIME_ZONE: "GMT+8",
   SHEET_NAME_COURSES: "Classroom_Courses",
@@ -651,6 +658,215 @@ function updateCourseTeachers(courseId, toAdd, toRemove) {
     added,
     removed
   };
+}
+
+/* -----------------------------------------
+   COURSE OWNERSHIP TRANSFER — v2.9.0
+   ----------------------------------------- */
+
+/**
+ * Makes `newOwner` the owner of a course. Called from the "Manage Teachers"
+ * modal (`transferOwnershipTo_()` in index.html).
+ *
+ * Sequence (each step exists for a reason):
+ *   1. Optimistic concurrency: if the caller passes the ownerId it loaded and the
+ *      live course has a different owner, refuse — someone else changed it, and
+ *      silently overwriting their change is worse than asking for a reload.
+ *   2. Resolve the target to a numeric Classroom userId (email or id accepted).
+ *      If the target already owns the course this is a no-op (`changed:false`).
+ *   3. Ensure the target is a teacher first. A course owner must be a teacher of
+ *      that course; adding them up-front makes the patch deterministic.
+ *   4. `Courses.patch({ownerId}, {updateMask:"ownerId"})` — domain admins are
+ *      allowed to transfer ownership this way. The response is verified.
+ *   5. Compensation: if step 4 fails and step 3 added the teacher, that teacher
+ *      is removed again so the course is left exactly as it was found.
+ *   6. Best-effort sync of the Classroom_Courses sheet + system log.
+ *
+ * The previous owner remains a co-teacher (Classroom behavior). Course Drive
+ * provisioning (coursedrive.gs) grants to the course's teacher GROUP, not the
+ * owner, so it is unaffected by an ownership change.
+ *
+ * @param {string} courseId
+ * @param {string} newOwner        email or numeric Classroom userId
+ * @param {string=} expectedOwnerId ownerId the UI loaded; enables step 1
+ * @return {{courseId:string, changed:boolean, previousOwnerId:string, ownerId:string,
+ *           ownerEmail:string, addedAsTeacher:boolean, message:string}}
+ */
+function transferCourseOwnership(courseId, newOwner, expectedOwnerId) {
+  return transferCourseOwnership_(courseId, newOwner, expectedOwnerId, null);
+}
+
+function getCourseOwnershipDeps_(deps) {
+  const d = deps || {};
+  return {
+    getCourse: d.getCourse || function (courseId) { return Classroom.Courses.get(courseId); },
+    getUserProfile: d.getUserProfile || function (userKey) { return Classroom.UserProfiles.get(userKey); },
+    getTeacher: d.getTeacher || function (courseId, userId) { return Classroom.Courses.Teachers.get(courseId, userId); },
+    addTeacher: d.addTeacher || function (courseId, userKey) { return Classroom.Courses.Teachers.create({ userId: userKey }, courseId); },
+    removeTeacher: d.removeTeacher || function (courseId, userId) { return Classroom.Courses.Teachers.remove(courseId, userId); },
+    patchOwner: d.patchOwner || function (courseId, ownerId) {
+      return Classroom.Courses.patch({ ownerId: ownerId }, courseId, { updateMask: "ownerId" });
+    },
+    updateSheet: d.updateSheet || updateCourseOwnerInSheet_,
+    log: d.log || logSystemAction_
+  };
+}
+
+/**
+ * Classroom errors arrive as GoogleJsonResponseException whose `.message` is
+ * localized to the executing account's language, so classify on the HTTP code
+ * and canonical status (`details.code` / `status`) first and only fall back to
+ * the enum text that Classroom embeds in its messages.
+ */
+function isClassroomNotFoundError_(err) {
+  const sig = getDriveErrorSignature_(err);
+  return sig.code === 404 || sig.reasons.indexOf("not_found") !== -1 || sig.message.indexOf("NOT_FOUND") !== -1;
+}
+
+function isClassroomAlreadyExistsError_(err) {
+  const sig = getDriveErrorSignature_(err);
+  return sig.code === 409 || sig.reasons.indexOf("already_exists") !== -1 || sig.message.indexOf("ALREADY_EXISTS") !== -1;
+}
+
+function transferCourseOwnership_(courseId, newOwner, expectedOwnerId, deps) {
+  const id = String(courseId || "").trim();
+  const target = String(newOwner || "").trim();
+  if (!id) throw new Error("請指定課程 (Course ID required).");
+  if (!target || target === "me") throw new Error("請指定新的課程擁有者。");
+  if (!/^\d+$/.test(target) && !isValidEmail_(target)) {
+    throw new Error(`新的擁有者格式無效（需為 Email 或使用者 ID）：${target}`);
+  }
+  const d = getCourseOwnershipDeps_(deps);
+
+  let course;
+  try {
+    course = d.getCourse(id);
+  } catch (e) {
+    throw new Error(`無法讀取課程 ${id}：${extractErrorReasonFromException_(e)}`);
+  }
+  const previousOwnerId = String((course && course.ownerId) || "");
+  const expected = String(expectedOwnerId || "").trim();
+  if (expected && previousOwnerId && expected !== previousOwnerId) {
+    throw new Error("課程擁有者已被其他操作變更，請關閉視窗並重新開啟教師管理後再試。");
+  }
+
+  let profile;
+  try {
+    profile = d.getUserProfile(target);
+  } catch (e) {
+    throw new Error(`找不到使用者 ${target}：${extractErrorReasonFromException_(e)}`);
+  }
+  const newOwnerId = String((profile && profile.id) || "");
+  const newOwnerEmail = String((profile && profile.emailAddress) || (isValidEmail_(target) ? target : "")).toLowerCase();
+  const display = newOwnerEmail || newOwnerId;
+  if (!newOwnerId) throw new Error(`無法解析使用者 ID：${target}`);
+
+  if (newOwnerId === previousOwnerId) {
+    return {
+      courseId: id,
+      changed: false,
+      previousOwnerId: previousOwnerId,
+      ownerId: newOwnerId,
+      ownerEmail: newOwnerEmail,
+      addedAsTeacher: false,
+      message: `${display} 已是此課程的擁有者，未做任何變更。`
+    };
+  }
+
+  // Step 3: the new owner must be a teacher of the course.
+  let isTeacher = false;
+  try {
+    d.getTeacher(id, newOwnerId);
+    isTeacher = true;
+  } catch (e) {
+    if (!isClassroomNotFoundError_(e)) {
+      throw new Error(`無法確認 ${display} 的教師身分：${extractErrorReasonFromException_(e)}`);
+    }
+  }
+
+  let addedAsTeacher = false;
+  if (!isTeacher) {
+    try {
+      d.addTeacher(id, newOwnerEmail || newOwnerId);
+      addedAsTeacher = true;
+    } catch (e) {
+      // ALREADY_EXISTS here means a concurrent add won the race — they ARE a
+      // teacher now, which is all step 3 needs. We did not add them, so we must
+      // not remove them during compensation either.
+      if (!isClassroomAlreadyExistsError_(e)) {
+        throw new Error(`無法先將 ${display} 加入為教師：${extractErrorReasonFromException_(e)}`);
+      }
+    }
+  }
+
+  // Step 4: transfer.
+  let patched;
+  try {
+    patched = d.patchOwner(id, newOwnerId);
+  } catch (e) {
+    const reason = extractErrorReasonFromException_(e);
+    const compensation = compensateOwnershipTeacherAdd_(d, id, newOwnerId, display, addedAsTeacher);
+    d.log("TRANSFER_COURSE_OWNER", id, "ERROR",
+      truncateLogDetail_(`from ${previousOwnerId} to ${display}: ${reason}. ${compensation}`, 3500));
+    throw new Error(`擁有者轉移失敗：${reason}${compensation ? "\n" + compensation : ""}`);
+  }
+
+  const confirmedOwnerId = String((patched && patched.ownerId) || "");
+  if (confirmedOwnerId && confirmedOwnerId !== newOwnerId) {
+    // The API accepted the call but reports a different owner. Do not claim
+    // success; the teacher we may have added is left in place because the
+    // course state is now unknown and removing them could fight a real change.
+    d.log("TRANSFER_COURSE_OWNER", id, "ERROR",
+      `Patch returned ownerId ${confirmedOwnerId}, expected ${newOwnerId}`);
+    throw new Error(`擁有者轉移結果無法確認（API 回傳擁有者 ${confirmedOwnerId}），請重新載入確認。`);
+  }
+
+  // Step 6: bookkeeping. The transfer already happened, so a sheet failure must
+  // never be reported as a transfer failure.
+  let sheetNote = "";
+  try {
+    d.updateSheet(id, newOwnerId);
+  } catch (e) {
+    sheetNote = ` (Classroom_Courses sheet not updated: ${getExceptionMessage_(e)})`;
+  }
+  d.log("TRANSFER_COURSE_OWNER", id, "SUCCESS",
+    truncateLogDetail_(`from ${previousOwnerId} to ${newOwnerId} (${display}); addedAsTeacher=${addedAsTeacher}${sheetNote}`, 3500));
+
+  return {
+    courseId: id,
+    changed: true,
+    previousOwnerId: previousOwnerId,
+    ownerId: newOwnerId,
+    ownerEmail: newOwnerEmail,
+    addedAsTeacher: addedAsTeacher,
+    message: `課程擁有者已轉移給 ${display}。原擁有者保留為協同教師。` +
+      (addedAsTeacher ? `\n（已先將 ${display} 加入為此課程教師）` : "")
+  };
+}
+
+/** Undo step 3 after a failed transfer. Returns a zh-TW note for the admin. */
+function compensateOwnershipTeacherAdd_(d, courseId, userId, display, addedAsTeacher) {
+  if (!addedAsTeacher) return "";
+  try {
+    d.removeTeacher(courseId, userId);
+    return `已移除剛加入的教師 ${display}，課程維持原狀。`;
+  } catch (e) {
+    return `回復失敗：剛加入的教師 ${display} 仍在課程中，請手動移除（${extractErrorReasonFromException_(e)}）。`;
+  }
+}
+
+/** Updates the Owner column (D) of the Classroom_Courses row for this course, if present. */
+function updateCourseOwnerInSheet_(courseId, ownerId) {
+  const ss = getDBSpreadsheet_();
+  const sheet = ss ? ss.getSheetByName(CONFIG.SHEET_NAME_COURSES) : null;
+  if (!sheet || sheet.getLastRow() < 2) return false;
+  const cell = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1)
+    .createTextFinder(String(courseId))
+    .matchEntireCell(true)
+    .findNext();
+  if (!cell) return false;
+  sheet.getRange(cell.getRow(), 4).setValue(String(ownerId));
+  return true;
 }
 
 /**
@@ -2371,9 +2587,137 @@ function getFilteredUsers(ouPath, dateCondition, specificDate) {
     });
 
     return allUsers;
-  } catch (e) { 
-    throw new Error("User API Error: " + e.message); 
+  } catch (e) {
+    throw new Error("User API Error: " + e.message);
   }
+}
+
+/* -----------------------------------------
+   STUDENTS GROUPED BY CLASS NAME — v2.9.0
+   ----------------------------------------- */
+
+const STUDENT_CLASS_OTHER_LABEL = "其他（無法辨識班級）";
+
+// <optional opening quote/bracket> <grade>年 <class>班 <optional closing quote/bracket>
+// <optional seat>號 <rest>. Grade/class accept Arabic or Chinese numerals; input
+// is NFKC-normalized first so full-width digits/quotes/brackets also match.
+const STUDENT_CLASS_NAME_PATTERN =
+  /^[\s"'“”‘’「『【\[(]*([0-9]+|[零〇一二兩三四五六七八九十]+)\s*年\s*([0-9]+|[零〇一二兩三四五六七八九十]+)\s*班[\s"'“”‘’」』】\])]*(?:([0-9]+)\s*號)?\s*(.*)$/;
+
+/** NFKC-normalizes text (full-width -> half-width). Safe if normalize() is unavailable. */
+function normalizeWidth_(value) {
+  const s = String(value == null ? "" : value);
+  try {
+    return s.normalize("NFKC");
+  } catch (e) {
+    return s.replace(/[０-９]/g, ch => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0));
+  }
+}
+
+function parseClassNumeral_(text) {
+  if (/^[0-9]+$/.test(text)) return parseInt(text, 10);
+  return chineseNumeralToInt_(text);
+}
+
+/**
+ * Parses a student account name such as `"6年一班"01號錢豐睿` into its class
+ * prefix. Returns null when the name does not start with a <grade>年<class>班
+ * prefix (teachers, staff, test accounts) — callers must keep those visible.
+ *
+ * @param {string} name
+ * @return {?{className:string, grade:number, classNo:number, seatNo:?number, personName:string}}
+ */
+function parseStudentClassName_(name) {
+  const normalized = normalizeWidth_(name).trim();
+  if (!normalized) return null;
+  const m = STUDENT_CLASS_NAME_PATTERN.exec(normalized);
+  if (!m) return null;
+  const grade = parseClassNumeral_(m[1]);
+  const classNo = parseClassNumeral_(m[2]);
+  if (isNaN(grade) || isNaN(classNo)) return null;
+  return {
+    className: `${m[1]}年${m[2]}班`,
+    grade: grade,
+    classNo: classNo,
+    seatNo: m[3] ? parseInt(m[3], 10) : null,
+    personName: String(m[4] || "").trim()
+  };
+}
+
+/**
+ * Groups directory users by class. Classes are ordered by (grade, class number)
+ * numerically, so "6年一班" and "6年1班" land in the SAME group and "6年十班"
+ * sorts after "6年九班". Inside each class, students are listed by account name
+ * ascending using the shared natural sort key (seat 01, 02, … 10). Names that
+ * do not parse go to a trailing STUDENT_CLASS_OTHER_LABEL group — every input
+ * user appears exactly once in the output.
+ *
+ * @param {Array<{name,email,suspended,org,lastLogin}>} users
+ * @return {Array<{className:string, count:number, unparsed:boolean, students:Array}>}
+ */
+function groupUsersByClassName_(users) {
+  const groupsByKey = {};
+  const other = [];
+
+  (users || []).forEach(u => {
+    if (!u || !u.email) return;
+    const parsed = parseStudentClassName_(u.name);
+    const student = {
+      name: String(u.name || u.email),
+      email: String(u.email).toLowerCase(),
+      seatNo: parsed ? parsed.seatNo : null,
+      suspended: Boolean(u.suspended),
+      org: String(u.org || "")
+    };
+    if (!parsed) {
+      other.push(student);
+      return;
+    }
+    const key = `${parsed.grade}-${parsed.classNo}`;
+    if (!groupsByKey[key]) {
+      groupsByKey[key] = { grade: parsed.grade, classNo: parsed.classNo, students: [] };
+    }
+    groupsByKey[key].students.push(student);
+  });
+
+  const byAccountName = function (a, b) {
+    const cmp = buildUserSortKey_(a.name).localeCompare(buildUserSortKey_(b.name), "zh-Hant");
+    return cmp !== 0 ? cmp : a.email.localeCompare(b.email);
+  };
+
+  const result = Object.keys(groupsByKey)
+    .map(key => groupsByKey[key])
+    .sort((a, b) => (a.grade - b.grade) || (a.classNo - b.classNo))
+    .map(group => {
+      group.students.sort(byAccountName);
+      // Label = how the first (lowest-sorted) student spells it, so a group
+      // merged from "6年1班" + "6年一班" still shows a real, recognizable label.
+      const label = parseStudentClassName_(group.students[0].name).className;
+      return { className: label, count: group.students.length, unparsed: false, students: group.students };
+    });
+
+  if (other.length > 0) {
+    other.sort(byAccountName);
+    result.push({ className: STUDENT_CLASS_OTHER_LABEL, count: other.length, unparsed: true, students: other });
+  }
+  return result;
+}
+
+/**
+ * Lists all users of an OU grouped by class name (see groupUsersByClassName_).
+ * Used by the Classroom "Enroll Students" picker and the Email recipient picker.
+ *
+ * @param {string} ouPath
+ * @return {{ouPath:string, total:number, groups:Array}}
+ */
+function getStudentsGroupedByClass(ouPath) {
+  if (!ouPath) throw new Error("請先選擇 OU。");
+  const users = getFilteredUsers(ouPath, "ALL", null);
+  return {
+    ouPath: String(ouPath),
+    total: users.length,
+    groups: groupUsersByClassName_(users)
+  };
 }
 
 function moveUsersToOU(emails, targetOU) {

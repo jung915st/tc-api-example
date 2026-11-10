@@ -3,7 +3,7 @@
 A Google Apps Script web app for Google Workspace for Education administrators:
 Classroom, Groups, Directory, Drive audit and bulk email — from one page.
 
-**Version 2.8.0** · Runtime V8 · Timezone Asia/Taipei
+**Version 2.9.0** · Runtime V8 · Timezone Asia/Taipei
 
 ---
 
@@ -21,8 +21,11 @@ Classroom, Groups, Directory, Drive audit and bulk email — from one page.
 | 8 | Drive | Outdated-file audit with shared-drive sweep; batch delete / archive |
 | 9 | Email | HTML notifications with `{name}` / `{email}` variables |
 | 10 | **Course Materials** | One Drive materials container per course, granted once to the Classroom course group (shared drive or folder + shortcut) |
+| 11 | **Course Ownership Transfer** | Make any teacher (or an OU teacher not yet on the course) the course owner from the Manage Teachers dialog |
+| 12 | **Class-grouped pickers** | Enrol / email students grouped by the class prefix of their account name (e.g. `"6年一班"01號…`), sorted by account name, whole-class selection |
+| 13 | **Per-student attachments** | Email each student their own files from a Drive folder (merged *Student Photo Email Dispatch*): mandatory preview, duplicate-safe resumable sending |
 
-Items 4–6 are new in 2.7.0. Item 10 is new in 2.8.0.
+Items 4–6 are new in 2.7.0. Item 10 is new in 2.8.0. Items 11–13 are new in 2.9.0.
 
 ---
 
@@ -121,7 +124,8 @@ indefinitely, don't install it and use suspend as an end state.
 
 ## Testing
 
-Run `runBatchCourseUnitTests()` in the Apps Script editor. All tests are offline —
+Run `runAllUnitTests()` in the Apps Script editor (it runs `runBatchCourseUnitTests()`,
+`runCourseDriveUnitTests()` and `runEmailAttachUnitTests()`). All tests are offline —
 API calls are dependency-injected — so the suite is safe to run in a live project.
 
 ---
@@ -134,7 +138,9 @@ AdminSuite.gs          server-side: all features + helpers (loaded first, see fi
 coursedrive.gs         server-side: course materials Drive provisioning (v2.8.0)
 index.html             single-page UI (Bootstrap 5) + client JS
 AdminSuite.tests.gs    offline unit tests
-tests_coursedrive.gs   offline unit tests for coursedrive.gs
+tests_coursedrive.gs   offline unit tests for coursedrive.gs (+ runAllUnitTests)
+emailattach.gs         server-side: per-student email attachments (v2.9.0)
+tests_emailattach.gs   offline unit tests for emailattach.gs
 ```
 
 ## Pushing to GitHub

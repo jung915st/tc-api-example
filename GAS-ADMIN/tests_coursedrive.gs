@@ -1076,11 +1076,13 @@ function decodeStubSubject_(params) {
 }
 
 /**
- * Convenience entry point: runs both suites. `runBatchCourseUnitTests()` and
- * `runCourseDriveUnitTests()` still work on their own.
+ * Convenience entry point: runs every suite. `runBatchCourseUnitTests()`,
+ * `runCourseDriveUnitTests()` and `runEmailAttachUnitTests()` still work on
+ * their own.
  */
 function runAllUnitTests() {
   const batch = runBatchCourseUnitTests();
   const courseDrive = runCourseDriveUnitTests();
-  return `${batch} ${courseDrive}`;
+  const emailAttach = runEmailAttachUnitTests();
+  return `${batch} ${courseDrive} ${emailAttach}`;
 }

@@ -331,6 +331,14 @@
                   </div>
                 </div>
 
+                <!-- v2.9.0: add a whole class (class name parsed from the account-name prefix) -->
+                <div class="input-group input-group-sm mb-2" id="studentClassPicker" style="display:none">
+                  <span class="input-group-text">班級</span>
+                  <select id="studentClassSelect" class="form-select"></select>
+                  <button class="btn btn-outline-success" type="button" onclick="setClassGroupChecked('studentCheckList', 'studentClassSelect', true)">勾選整班</button>
+                  <button class="btn btn-outline-secondary" type="button" onclick="setClassGroupChecked('studentCheckList', 'studentClassSelect', false)">取消整班</button>
+                </div>
+
                 <!-- Student Checklist -->
                 <div class="mb-3 flex-grow-1 position-relative">
                    <div id="studentCheckList" class="checklist-scroll h-100">
@@ -853,6 +861,14 @@
                             </div>
                         </div>
 
+                        <!-- v2.9.0: whole-class selection -->
+                        <div class="input-group input-group-sm mb-2" id="emailClassPicker" style="display:none">
+                            <span class="input-group-text">班級</span>
+                            <select id="emailClassSelect" class="form-select"></select>
+                            <button class="btn btn-outline-success" type="button" onclick="setClassGroupChecked('emailRecipientsList', 'emailClassSelect', true)">勾選整班</button>
+                            <button class="btn btn-outline-secondary" type="button" onclick="setClassGroupChecked('emailRecipientsList', 'emailClassSelect', false)">取消</button>
+                        </div>
+
                         <div class="mb-3 flex-grow-1 position-relative">
                             <div id="emailRecipientsList" class="checklist-scroll h-100">
                                 <div class="text-center text-muted mt-5">
@@ -876,6 +892,7 @@
                             <ul class="dropdown-menu">
                                 <li><a class="dropdown-item" href="#" onclick="insertAtCursor('{name}')">User Name {name}</a></li>
                                 <li><a class="dropdown-item" href="#" onclick="insertAtCursor('{email}')">User Email {email}</a></li>
+                                <li><a class="dropdown-item" href="#" onclick="insertAtCursor('{key}')">配對值／學號 {key}（個別附件）</a></li>
                             </ul>
                         </div>
                     </div>
@@ -896,13 +913,100 @@
                         </div>
                     </div>
                     <div class="card-footer bg-white text-end">
-                        <button class="btn btn-primary px-4" onclick="sendBatchEmail()">
+                        <button class="btn btn-primary px-4" id="emailLegacySendBtn" onclick="sendBatchEmail()">
                             <i class="bi bi-send"></i> Send Email to Selected
                         </button>
                     </div>
                 </div>
             </div>
 
+        </div>
+
+        <!-- v2.9.0: PER-STUDENT ATTACHMENTS (merged Student Photo Email Dispatch) -->
+        <div class="row mt-3">
+          <div class="col-12">
+            <div class="card">
+              <div class="card-header bg-white fw-bold d-flex justify-content-between align-items-center">
+                <span><i class="bi bi-paperclip"></i> 3. 個別附件（選用）— 每位學生寄送自己的檔案</span>
+                <div class="form-check form-switch mb-0">
+                  <input class="form-check-input" type="checkbox" id="emailAttachEnabled" onchange="onEmailAttachToggle_()">
+                  <label class="form-check-label small" for="emailAttachEnabled">啟用個別附件</label>
+                </div>
+              </div>
+              <div class="card-body" id="emailAttachBody" style="display:none">
+                <div class="row g-2">
+                  <div class="col-md-6">
+                    <label class="form-label small fw-bold mb-1">附件資料夾（Google Drive 資料夾網址或 ID）</label>
+                    <input type="text" id="emailAttachFolder" class="form-control form-control-sm" placeholder="https://drive.google.com/drive/folders/...">
+                    <div class="form-text">含所有子資料夾（最多 8 層、2,000 個檔案）。Google 文件／試算表／簡報會轉成 PDF 附加。</div>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label small fw-bold mb-1">收件人來源</label>
+                    <select id="emailAttachRecipientSource" class="form-select form-select-sm" onchange="onEmailAttachSourceChange_()">
+                      <option value="LIST">左側勾選的名單</option>
+                      <option value="CSV">上傳名單 CSV（學號, Email）</option>
+                    </select>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label small fw-bold mb-1">寄件者名稱</label>
+                    <input type="text" id="emailSenderName" class="form-control form-control-sm" value="Domain Admin System" maxlength="60">
+                  </div>
+
+                  <div class="col-md-4" id="emailAttachMatchKeyWrap">
+                    <label class="form-label small fw-bold mb-1">檔名配對依據</label>
+                    <select id="emailAttachMatchKey" class="form-select form-select-sm">
+                      <option value="EMAIL_LOCAL">帳號（Email @ 前段，例如 s1120301）</option>
+                      <option value="EMAIL">完整 Email</option>
+                      <option value="NAME">帳號名稱（例如 6年一班01號錢豐睿）</option>
+                    </select>
+                  </div>
+                  <div class="col-md-4" id="emailAttachCsvWrap" style="display:none">
+                    <label class="form-label small fw-bold mb-1">名單檔案（.csv / .tsv）</label>
+                    <input type="file" id="emailAttachCsv" class="form-control form-control-sm" accept=".csv,.tsv,.txt" onchange="onEmailAttachCsvSelected_()">
+                    <div class="form-text">欄位：學號, Email（可另含 姓名）。若學號有前導 0，請確認未被 Excel 去除。</div>
+                    <div id="emailAttachCsvStatus" class="small mt-1"></div>
+                  </div>
+                  <div class="col-md-4">
+                    <label class="form-label small fw-bold mb-1">找不到檔案的收件人</label>
+                    <select id="emailAttachMissingPolicy" class="form-select form-select-sm">
+                      <option value="SKIP">略過（不寄送）</option>
+                      <option value="SEND_WITHOUT">仍寄送（不含附件）</option>
+                    </select>
+                  </div>
+                  <div class="col-md-4 d-flex align-items-end gap-2 flex-wrap">
+                    <button class="btn btn-outline-secondary btn-sm" type="button" onclick="applyPhotoDispatchPreset_()">
+                      <i class="bi bi-image"></i> 套用「學生照片分發」範本
+                    </button>
+                  </div>
+                </div>
+
+                <div class="alert alert-light border small py-2 mt-2 mb-2">
+                  <strong>檔名規則：</strong>檔名（去掉副檔名）等於配對值，或以配對值開頭並接 <code>_</code> <code>-</code> <code>.</code> 空白 <code>(</code>，
+                  例如 <code>s001.jpg</code>、<code>s001_成績單.pdf</code>（同一人可有多個檔案）。
+                  <strong>同一檔名出現多次、或同時符合多位收件人的檔案，不會寄給任何人。</strong>
+                  必須先預覽；寄送中斷時再按一次寄送即可續傳，已寄出的不會重複。
+                </div>
+
+                <div class="d-flex gap-2 mb-2">
+                  <button class="btn btn-outline-primary btn-sm" id="emailAttachPreviewBtn" type="button" onclick="previewEmailAttachmentsUi_()">
+                    <i class="bi bi-eye"></i> 預覽配對
+                  </button>
+                  <button class="btn btn-primary btn-sm" id="emailAttachSendBtn" type="button" onclick="sendPersonalizedEmailsUi_()" disabled>
+                    <i class="bi bi-send-check"></i> 寄送個別附件郵件
+                  </button>
+                </div>
+
+                <div id="emailAttachProgress" class="mb-2" style="display:none">
+                  <div class="progress" style="height: 18px;">
+                    <div id="emailAttachProgressBar" class="progress-bar progress-bar-striped progress-bar-animated" role="progressbar" style="width: 0%">0%</div>
+                  </div>
+                  <div id="emailAttachProgressText" class="small text-muted mt-1"></div>
+                </div>
+                <div id="emailAttachRunResult" class="small mb-2"></div>
+                <div id="emailAttachPreview"></div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -925,7 +1029,7 @@
             <!-- Current Teachers -->
             <div class="col-md-6">
               <label class="form-label text-muted small fw-bold">CURRENT TEACHERS</label>
-              <div class="text-muted small mb-1">Uncheck a teacher to remove them. The owner cannot be removed.</div>
+              <div class="text-muted small mb-1">Uncheck a teacher to remove them. The owner cannot be removed. 按 <i class="bi bi-key"></i>「設為擁有者」可轉移課程擁有權。</div>
               <div id="teacherCurrentList" class="checklist-scroll" style="max-height: 280px;">
                 <div class="text-center text-muted mt-4">Loading teachers...</div>
               </div>
@@ -945,6 +1049,9 @@
                 </select>
                 <button class="btn btn-outline-primary" type="button" onclick="addTeacherToPending()">
                   <i class="bi bi-plus-lg"></i> Add
+                </button>
+                <button class="btn btn-outline-warning" type="button" onclick="transferOwnershipFromCandidate_()" title="將選取的教師設為課程擁有者">
+                  <i class="bi bi-key"></i> 設為擁有者
                 </button>
               </div>
               <label class="form-label text-muted small fw-bold mt-2">PENDING ADDITIONS</label>
@@ -1028,6 +1135,8 @@
     let teacherModalCurrent_ = [];             // [{userId,email,name,isOwner}] current roster
     let teacherModalPendingAdd_ = new Map();   // email -> displayName queued for addition
     let teacherModalInstance_ = null;          // cached bootstrap.Modal instance
+    let teacherModalOwnerId_ = '';             // ownerId as loaded; sent as the optimistic-concurrency token
+    let enrollRosterSeq_ = 0;                  // guards against out-of-order roster responses
 
     window.onload = function() {
       // Init Drive Date to 1 year ago by default
@@ -1167,19 +1276,43 @@
       }).listCourses();
     }
 
+    /**
+     * v2.9.0 fix: the roster loads asynchronously. Previously, if the OU list was
+     * rendered before the roster arrived, enrolled students showed UNCHECKED and
+     * "Apply" then removed all of them. Now the roster re-applies the checked
+     * state when it arrives, submit is blocked until it has, and a stale response
+     * for a previously selected course is ignored.
+     */
     function onCourseSelectChange() {
       const courseId = document.getElementById('enrollCourseSelect').value;
       enrolledEmailsCache_ = null;
-      loadedOuEmails_ = null;
+      const seq = ++enrollRosterSeq_;
       if (!courseId) return;
       google.script.run
         .withSuccessHandler(emails => {
+          if (seq !== enrollRosterSeq_) return;
           enrolledEmailsCache_ = new Set(emails);
+          applyEnrollmentStateToChecklist_();
         })
         .withFailureHandler(() => {
+          if (seq !== enrollRosterSeq_) return;
           enrolledEmailsCache_ = new Set();
+          applyEnrollmentStateToChecklist_();
         })
         .getEnrolledStudentEmails(courseId);
+    }
+
+    function applyEnrollmentStateToChecklist_() {
+      if (!(enrolledEmailsCache_ instanceof Set)) return;
+      const container = document.getElementById('studentCheckList');
+      if (!container) return;
+      container.querySelectorAll('.student-check').forEach(cb => {
+        const enrolled = enrolledEmailsCache_.has(String(cb.value).toLowerCase());
+        cb.checked = enrolled;
+        const badge = cb.parentElement ? cb.parentElement.querySelector('.enrolled-badge') : null;
+        if (badge) badge.style.display = enrolled ? '' : 'none';
+      });
+      syncAllClassGroupToggles_('studentCheckList');
     }
 
     // --- MANAGE TEACHERS (per-course) ---
@@ -1189,6 +1322,7 @@
       const course = coursesById_[courseId] || {};
       teacherModalCourseId_ = courseId;
       teacherModalCurrent_ = [];
+      teacherModalOwnerId_ = '';
       teacherModalPendingAdd_ = new Map();
 
       const titleEl = document.getElementById('teacherModalCourseName');
@@ -1206,11 +1340,21 @@
         teacherModalInstance_ = new bootstrap.Modal(document.getElementById('teacherModal'));
       }
       teacherModalInstance_.show();
+      reloadTeacherModalList_();
+    }
 
+    function reloadTeacherModalList_() {
+      const courseId = teacherModalCourseId_;
+      if (!courseId) return;
+      const listEl = document.getElementById('teacherCurrentList');
+      listEl.innerHTML = '<div class="text-center text-muted mt-4">Loading teachers...</div>';
       google.script.run.withSuccessHandler(res => {
+        if (courseId !== teacherModalCourseId_) return; // modal re-opened for another course
         teacherModalCurrent_ = (res && res.teachers) || [];
+        teacherModalOwnerId_ = (res && res.ownerId) || '';
         renderCurrentTeachers_();
       }).withFailureHandler(err => {
+        if (courseId !== teacherModalCourseId_) return;
         listEl.innerHTML = `<div class="text-danger small">Failed to load teachers: ${escapeHtml(err.message)}</div>`;
       }).getCourseTeachers(courseId);
     }
@@ -1221,8 +1365,11 @@
         listEl.innerHTML = '<div class="text-center text-muted mt-4">No teachers found.</div>';
         return;
       }
-      listEl.innerHTML = teacherModalCurrent_.map(t => {
+      listEl.innerHTML = teacherModalCurrent_.map((t, idx) => {
         const ownerBadge = t.isOwner ? '<span class="badge bg-secondary ms-1" style="font-size:0.7em">Owner</span>' : '';
+        const ownerAction = t.isOwner ? '' : `
+            <button type="button" class="btn btn-link btn-sm p-0 ms-2 align-baseline text-warning text-decoration-none"
+              title="設為課程擁有者" onclick="transferOwnershipFromList_(${idx})"><i class="bi bi-key"></i> 設為擁有者</button>`;
         const safeId = encodeURIComponent(t.userId);
         return `
           <div class="form-check">
@@ -1231,7 +1378,7 @@
               data-email="${escapeHtml(t.email)}" checked ${t.isOwner ? 'disabled' : ''}>
             <label class="form-check-label small" for="teacher_keep_${safeId}">
               ${escapeHtml(t.name)} <span class="text-muted">(${escapeHtml(t.email || t.userId)})</span>${ownerBadge}
-            </label>
+            </label>${ownerAction}
           </div>`;
       }).join('');
     }
@@ -1272,6 +1419,53 @@
           </span>`;
       });
       el.innerHTML = html;
+    }
+
+    // --- v2.9.0: COURSE OWNERSHIP TRANSFER ---
+
+    function hasPendingTeacherChanges_() {
+      if (teacherModalPendingAdd_.size > 0) return true;
+      return Array.prototype.some.call(document.querySelectorAll('.teacher-keep-check'),
+        cb => !cb.checked && !cb.disabled);
+    }
+
+    function transferOwnershipFromList_(index) {
+      const t = teacherModalCurrent_[index];
+      if (!t || t.isOwner) return;
+      transferCourseOwnershipUi_(t.email || t.userId, t.email ? `${t.name} (${t.email})` : t.name);
+    }
+
+    function transferOwnershipFromCandidate_() {
+      const sel = document.getElementById('teacherModalCandidate');
+      const email = sel.value;
+      if (!email || email === 'me') return alert("請先從 OU 清單選擇一位教師。");
+      const label = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : email;
+      transferCourseOwnershipUi_(email, label);
+    }
+
+    function transferCourseOwnershipUi_(target, label) {
+      if (!teacherModalCourseId_) return;
+      if (hasPendingTeacherChanges_()) {
+        return alert("目前有尚未套用的教師變更。請先按「Apply Changes」或取消變更，再轉移擁有者。");
+      }
+      const owner = teacherModalCurrent_.find(t => t.isOwner);
+      const ownerText = owner
+        ? `\n\n目前擁有者：${owner.name}${owner.email ? ' (' + owner.email + ')' : ''}\n（轉移後保留為協同教師）`
+        : '';
+      if (!confirm(`確定將課程擁有者轉移給：\n${label}？${ownerText}\n\n若此人尚未是本課程教師，系統會先將其加入為教師。`)) return;
+
+      const courseId = teacherModalCourseId_;
+      setLoader(true, "正在轉移課程擁有者...");
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        if (coursesById_[courseId]) coursesById_[courseId].ownerId = res.ownerId;
+        alert(res.message);
+        if (courseId === teacherModalCourseId_) reloadTeacherModalList_();
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert("轉移失敗：" + err.message);
+        if (courseId === teacherModalCourseId_) reloadTeacherModalList_();
+      }).transferCourseOwnership(courseId, target, teacherModalOwnerId_);
     }
 
     function saveTeacherChanges() {
@@ -1595,6 +1789,7 @@
 
       if (!ou) return alert("Please select an OU first.");
       if (containerId === 'studentCheckList') loadedOuEmails_ = null;
+      if (CLASS_GROUPED_LISTS_[containerId]) return loadClassGroupedStudents_(ou, containerId);
 
       setLoader(true, `Loading users from ${ou}...`);
       google.script.run.withSuccessHandler(users => {
@@ -1625,9 +1820,9 @@
             : '';
           containerEl.innerHTML += `
             <div class="form-check">
-              <input class="form-check-input ${checkClass}" type="checkbox" value="${u.email}"
-                id="${checkClass}_${u.email}" ${isEnrolled ? 'checked' : ''}>
-              <label class="form-check-label small" for="${checkClass}_${u.email}">
+              <input class="form-check-input ${checkClass}" type="checkbox" value="${escapeHtml(u.email)}"
+                id="${checkClass}_${escapeHtml(u.email)}" ${isEnrolled ? 'checked' : ''}>
+              <label class="form-check-label small" for="${checkClass}_${escapeHtml(u.email)}">
                 ${escapeHtml(u.name)} <span class="text-muted">(${escapeHtml(u.email)})</span>${enrolledBadge}
               </label>
             </div>
@@ -1647,6 +1842,7 @@
       const courseId = document.getElementById('enrollCourseSelect').value;
       if (!courseId) return alert("Please select a target course.");
       if (!(loadedOuEmails_ instanceof Set)) return alert("Please load students from an OU first.");
+      if (!(enrolledEmailsCache_ instanceof Set)) return alert("課程名單仍在載入中，請稍候再試（避免誤將已加入的學生移除）。");
 
       const checkedEmails = new Set(getCheckedValues('.student-check').map(e => e.toLowerCase()));
 
@@ -2351,6 +2547,10 @@
     }
 
     function sendBatchEmail() {
+        const attachToggle = document.getElementById('emailAttachEnabled');
+        if (attachToggle && attachToggle.checked) {
+            return alert("已啟用「個別附件」，請使用下方的「預覽配對」與「寄送個別附件郵件」。");
+        }
         const recipients = getCheckedValues('.email-check');
         const subject = document.getElementById('emailSubject').value;
         const body = document.getElementById('emailBody').value;
@@ -2370,6 +2570,431 @@
             setLoader(false);
             alert("Email Error: " + err.message);
         }).sendCustomEmailBatch(recipients, subject, body);
+    }
+
+    /* ==================== v2.9.0: CLASS-GROUPED STUDENT LISTS ==================== */
+
+    // Lists rendered grouped by class name (parsed server-side from the account
+    // name prefix, e.g. "6年一班"01號…). Every account stays visible as its own
+    // checkbox under its class heading. The Groups tab member list stays flat.
+    const CLASS_GROUPED_LISTS_ = {
+      studentCheckList: { pickerId: 'studentClassPicker', selectId: 'studentClassSelect' },
+      emailRecipientsList: { pickerId: 'emailClassPicker', selectId: 'emailClassSelect' }
+    };
+
+    function loadClassGroupedStudents_(ou, containerId) {
+      const containerEl = document.getElementById(containerId);
+      const cfg = CLASS_GROUPED_LISTS_[containerId];
+      const checkClass = resolveChecklistClass_(containerId);
+      const isClassroomEnroll = (containerId === 'studentCheckList');
+
+      setLoader(true, `Loading users from ${ou}...`);
+      google.script.run.withSuccessHandler(data => {
+        setLoader(false);
+        renderClassGroupedChecklist_(containerEl, cfg, checkClass, data, isClassroomEnroll);
+        if (isClassroomEnroll) {
+          loadedOuEmails_ = new Set();
+          (data.groups || []).forEach(g => g.students.forEach(st => loadedOuEmails_.add(st.email.toLowerCase())));
+          applyEnrollmentStateToChecklist_();
+        }
+      }).withFailureHandler(err => {
+        setLoader(false);
+        alert(err.message);
+      }).getStudentsGroupedByClass(ou);
+    }
+
+    function renderClassGroupedChecklist_(containerEl, cfg, checkClass, data, showEnrollBadges) {
+      const groups = (data && data.groups) || [];
+      const picker = document.getElementById(cfg.pickerId);
+      const select = document.getElementById(cfg.selectId);
+
+      if (groups.length === 0) {
+        containerEl.innerHTML = '<div class="text-center text-muted mt-3">No active users found in this OU.</div>';
+        picker.style.display = 'none';
+        select.innerHTML = '';
+        return;
+      }
+
+      const parts = [`
+        <div class="form-check border-bottom pb-2 mb-2">
+          <input class="form-check-input" type="checkbox" id="${checkClass}_all"
+            onchange="toggleAll(this, '.${checkClass}'); syncAllClassGroupToggles_('${containerEl.id}')">
+          <label class="form-check-label fw-bold" for="${checkClass}_all">Select All (${data.total})</label>
+        </div>`];
+
+      groups.forEach((g, gi) => {
+        parts.push(`
+          <div class="class-group mb-2">
+            <div class="d-flex align-items-center gap-2 bg-light border rounded px-2 py-1">
+              <input class="form-check-input m-0 class-group-toggle" type="checkbox" id="${checkClass}_g${gi}"
+                data-group-index="${gi}" onchange="toggleClassGroup_(this, '${containerEl.id}')">
+              <label class="form-check-label fw-bold small" for="${checkClass}_g${gi}">${escapeHtml(g.className)}</label>
+              <span class="badge ${g.unparsed ? 'bg-warning text-dark' : 'bg-secondary'}">${g.count}</span>
+            </div>
+            <div class="ps-3 pt-1">`);
+        g.students.forEach((st, si) => {
+          const id = `${checkClass}_${gi}_${si}`;
+          parts.push(`
+              <div class="form-check">
+                <input class="form-check-input ${checkClass}" type="checkbox" id="${id}"
+                  value="${escapeHtml(st.email)}" data-group-index="${gi}" data-name="${escapeHtml(st.name)}">
+                <label class="form-check-label small" for="${id}">
+                  ${escapeHtml(st.name)} <span class="text-muted">(${escapeHtml(st.email)})</span>
+                  ${st.suspended ? '<span class="badge bg-secondary ms-1" style="font-size:0.7em">已停用</span>' : ''}
+                  ${showEnrollBadges ? '<span class="badge bg-success ms-1 enrolled-badge" style="font-size:0.7em;display:none">已加入</span>' : ''}
+                </label>
+              </div>`);
+        });
+        parts.push('</div></div>');
+      });
+
+      containerEl.innerHTML = parts.join('');
+      containerEl.onchange = function (evt) {
+        const target = evt.target;
+        if (target && target.classList && target.classList.contains(checkClass)) {
+          syncClassGroupToggle_(containerEl, target.getAttribute('data-group-index'));
+        }
+      };
+
+      select.innerHTML = groups
+        .map((g, gi) => `<option value="${gi}">${escapeHtml(g.className)}（${g.count} 人）</option>`)
+        .join('');
+      picker.style.display = '';
+    }
+
+    function toggleClassGroup_(toggleEl, containerId) {
+      const container = document.getElementById(containerId);
+      const checkClass = resolveChecklistClass_(containerId);
+      const gi = toggleEl.getAttribute('data-group-index');
+      container.querySelectorAll(`.${checkClass}[data-group-index="${gi}"]`).forEach(cb => { cb.checked = toggleEl.checked; });
+      toggleEl.indeterminate = false;
+    }
+
+    function syncClassGroupToggle_(container, gi) {
+      const checkClass = resolveChecklistClass_(container.id);
+      const toggle = container.querySelector(`.class-group-toggle[data-group-index="${gi}"]`);
+      if (!toggle) return;
+      const boxes = container.querySelectorAll(`.${checkClass}[data-group-index="${gi}"]`);
+      let checked = 0;
+      boxes.forEach(cb => { if (cb.checked) checked++; });
+      toggle.checked = boxes.length > 0 && checked === boxes.length;
+      toggle.indeterminate = checked > 0 && checked < boxes.length;
+    }
+
+    function syncAllClassGroupToggles_(containerId) {
+      const container = document.getElementById(containerId);
+      if (!container) return;
+      container.querySelectorAll('.class-group-toggle').forEach(t => {
+        syncClassGroupToggle_(container, t.getAttribute('data-group-index'));
+      });
+    }
+
+    function setClassGroupChecked(containerId, selectId, checked) {
+      const gi = document.getElementById(selectId).value;
+      if (gi === '' || gi === null) return;
+      const container = document.getElementById(containerId);
+      const checkClass = resolveChecklistClass_(containerId);
+      const boxes = container.querySelectorAll(`.${checkClass}[data-group-index="${gi}"]`);
+      boxes.forEach(cb => { cb.checked = checked; });
+      syncClassGroupToggle_(container, gi);
+      if (boxes[0]) boxes[0].closest('.class-group').scrollIntoView({ block: 'nearest' });
+    }
+
+    /* ==================== v2.9.0: PER-STUDENT EMAIL ATTACHMENTS ==================== */
+
+    let emailAttachJob_ = null;      // { id, done } — one job spans re-previews until it completes
+    let emailAttachPreview_ = null;  // { mappingHash, signature, result }
+    let emailAttachCsv_ = null;      // parseEmailDispatchCsv() result
+    let emailAttachRunning_ = false;
+    let emailAttachRowIndex_ = {};   // email -> preview table row index
+
+    const EMAIL_ATTACH_STATUS_LABELS_ = {
+      MATCHED: ['bg-success', '已配對'],
+      NO_MATCH: ['bg-secondary', '找不到檔案'],
+      AMBIGUOUS: ['bg-danger', '配對不明確'],
+      TOO_MANY: ['bg-warning text-dark', '檔案過多'],
+      TOO_LARGE: ['bg-warning text-dark', '附件過大'],
+      INVALID_EMAIL: ['bg-danger', 'Email 無效'],
+      DUPLICATE_EMAIL: ['bg-secondary', '重複收件人'],
+      DUPLICATE_KEY: ['bg-danger', '配對值重複'],
+      MISSING_KEY: ['bg-secondary', '無配對值'],
+      SENT: ['bg-success', '已寄出'],
+      FAILED: ['bg-danger', '寄送失敗']
+    };
+
+    function emailAttachStatusBadge_(status) {
+      const m = EMAIL_ATTACH_STATUS_LABELS_[status] || ['bg-light text-dark border', status];
+      return `<span class="badge ${m[0]}">${escapeHtml(m[1])}</span>`;
+    }
+
+    function formatBytesUi_(bytes) {
+      const n = Number(bytes) || 0;
+      if (n < 1024) return `${n} B`;
+      if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+      return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+    }
+
+    function onEmailAttachToggle_() {
+      const on = document.getElementById('emailAttachEnabled').checked;
+      document.getElementById('emailAttachBody').style.display = on ? '' : 'none';
+      document.getElementById('emailLegacySendBtn').disabled = on;
+    }
+
+    function onEmailAttachSourceChange_() {
+      const csv = document.getElementById('emailAttachRecipientSource').value === 'CSV';
+      document.getElementById('emailAttachMatchKeyWrap').style.display = csv ? 'none' : '';
+      document.getElementById('emailAttachCsvWrap').style.display = csv ? '' : 'none';
+    }
+
+    /** Excel (zh-TW) saves CSV as Big5: read as UTF-8 first, fall back to Big5 on replacement chars. */
+    function readTextFileSmart_(file, callback) {
+      const reader = new FileReader();
+      reader.onload = evt => {
+        const text = String(evt.target.result || '');
+        if (text.indexOf('�') === -1) return callback(text);
+        const big5 = new FileReader();
+        big5.onload = e2 => callback(String(e2.target.result || ''));
+        big5.onerror = () => callback(text);
+        big5.readAsText(file, 'big5');
+      };
+      reader.onerror = () => alert("無法讀取檔案。");
+      reader.readAsText(file, 'utf-8');
+    }
+
+    function onEmailAttachCsvSelected_() {
+      const input = document.getElementById('emailAttachCsv');
+      const statusEl = document.getElementById('emailAttachCsvStatus');
+      emailAttachCsv_ = null;
+      const file = input.files && input.files[0];
+      if (!file) { statusEl.innerHTML = ''; return; }
+      readTextFileSmart_(file, text => {
+        setLoader(true, "解析名單中...");
+        google.script.run.withSuccessHandler(res => {
+          setLoader(false);
+          emailAttachCsv_ = res;
+          const skippedHtml = res.skipped.length
+            ? `<details class="mt-1"><summary>略過 ${res.skipped.length} 列</summary><ul class="mb-0">` +
+              res.skipped.slice(0, 50).map(sk => `<li>第 ${sk.rowNumber} 列：${escapeHtml(sk.reason)}</li>`).join('') +
+              '</ul></details>'
+            : '';
+          statusEl.innerHTML = `<span class="text-success">已載入 ${res.recipients.length} 位收件人</span>` +
+            `（${res.headerMode === 'HEADER' ? '依標題欄位' : '依欄位順序：A=學號、B=Email'}）${skippedHtml}`;
+        }).withFailureHandler(err => {
+          setLoader(false);
+          statusEl.innerHTML = `<span class="text-danger">${escapeHtml(err.message)}</span>`;
+        }).parseEmailDispatchCsv(file.name, text);
+      });
+    }
+
+    function collectEmailAttachRecipients_() {
+      const source = document.getElementById('emailAttachRecipientSource').value;
+      if (source === 'CSV') {
+        if (!emailAttachCsv_ || emailAttachCsv_.recipients.length === 0) {
+          throw new Error("請先上傳名單 CSV（學號, Email）。");
+        }
+        return emailAttachCsv_.recipients.map(r => ({ email: r.email, name: r.name || '', key: r.key }));
+      }
+      const boxes = Array.from(document.querySelectorAll('.email-check:checked'));
+      if (boxes.length === 0) throw new Error("請在左側勾選至少一位收件人。");
+      return boxes.map(cb => ({ email: cb.value, name: cb.getAttribute('data-name') || '' }));
+    }
+
+    function buildEmailAttachBaseRequest_() {
+      const source = document.getElementById('emailAttachRecipientSource').value;
+      return {
+        folderId: document.getElementById('emailAttachFolder').value.trim(),
+        recipientSource: source,
+        matchKey: source === 'CSV' ? 'CSV_KEY' : document.getElementById('emailAttachMatchKey').value,
+        missingPolicy: document.getElementById('emailAttachMissingPolicy').value,
+        recipients: collectEmailAttachRecipients_()
+      };
+    }
+
+    function emailAttachSignature_(req) {
+      return JSON.stringify([req.folderId, req.recipientSource, req.matchKey, req.missingPolicy, req.recipients]);
+    }
+
+    function newEmailJobId_() {
+      if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
+      const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+      return 'job-' + Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    function previewEmailAttachmentsUi_() {
+      if (emailAttachRunning_) return;
+      let req;
+      try { req = buildEmailAttachBaseRequest_(); } catch (e) { return alert(e.message); }
+      if (!req.folderId) return alert("請輸入附件資料夾網址或 ID。");
+      // Keep the same jobId across re-previews until the job completes, so a
+      // re-preview after an interruption still de-duplicates against the ledger.
+      if (!emailAttachJob_ || emailAttachJob_.done) emailAttachJob_ = { id: newEmailJobId_(), done: false };
+
+      const sendBtn = document.getElementById('emailAttachSendBtn');
+      sendBtn.disabled = true;
+      document.getElementById('emailAttachRunResult').innerHTML = '';
+      setLoader(true, "正在掃描資料夾並配對附件...");
+      google.script.run.withSuccessHandler(res => {
+        setLoader(false);
+        emailAttachPreview_ = { mappingHash: res.mappingHash, signature: emailAttachSignature_(req), result: res };
+        renderEmailAttachPreview_(res);
+        sendBtn.disabled = res.summary.willSend === 0;
+      }).withFailureHandler(err => {
+        setLoader(false);
+        emailAttachPreview_ = null;
+        document.getElementById('emailAttachPreview').innerHTML =
+          `<div class="alert alert-danger small mb-0">${escapeHtml(err.message)}</div>`;
+      }).previewEmailAttachments(req);
+    }
+
+    function renderEmailAttachPreview_(res) {
+      const s = res.summary;
+      const statusCounts = Object.keys(s.byStatus)
+        .map(k => `${emailAttachStatusBadge_(k)} ${s.byStatus[k]}`).join('&nbsp; ');
+      const listBlock = (title, items, fmt) => items.length === 0 ? '' :
+        `<details class="mt-1"><summary>${title}</summary><ul class="mb-0">${items.map(fmt).join('')}</ul></details>`;
+
+      emailAttachRowIndex_ = {};
+      const rowsHtml = res.rows.map((r, i) => {
+        if (emailAttachRowIndex_[r.email] === undefined) emailAttachRowIndex_[r.email] = i;
+        const files = r.files.length
+          ? r.files.map(f => `${escapeHtml(f.name)}${f.native ? ' → PDF' : ''} <span class="text-muted">(${f.bytes === null ? '轉檔後計算' : formatBytesUi_(f.bytes)})</span>`).join('<br>')
+          : '<span class="text-muted">—</span>';
+        return `
+          <tr id="emailAttachRow_${i}" class="${r.willSend ? '' : 'text-muted'}">
+            <td>${escapeHtml(r.name || '')}<div class="small text-muted">${escapeHtml(r.email)}</div></td>
+            <td><code>${escapeHtml(r.key || '')}</code></td>
+            <td class="email-attach-status text-nowrap">${emailAttachStatusBadge_(r.status)}${r.willSend ? '' : ' <span class="badge bg-light text-dark border">不寄送</span>'}</td>
+            <td class="small">${files}</td>
+            <td class="small email-attach-reason">${escapeHtml(r.reason || '')}</td>
+          </tr>`;
+      }).join('');
+
+      document.getElementById('emailAttachPreview').innerHTML = `
+        <div class="alert alert-info small py-2 mb-2">
+          資料夾「${escapeHtml(res.folder.name)}」：掃描 ${res.folder.foldersScanned} 個資料夾、${res.folder.filesIndexed} 個檔案。<br>
+          將寄出 <strong>${s.willSend}</strong> 封（含附件 ${s.withAttachments} 封、無附件 ${s.withoutAttachments} 封，共 ${s.attachmentCount} 個附件）／收件人 ${s.recipients} 位。<br>
+          ${statusCounts}
+          ${listBlock(`未配對到任何收件人的檔案 ${res.unmatchedCount} 個`, res.unmatchedFiles,
+            f => `<li>${escapeHtml(f.path)}/${escapeHtml(f.name)}</li>`)}
+          ${listBlock(`配對不明確（不會寄出）的檔案 ${res.ambiguousCount} 個`, res.ambiguousFiles,
+            f => `<li>${escapeHtml(f.path)}/${escapeHtml(f.name)}：${escapeHtml(f.reason)}</li>`)}
+          ${listBlock(`略過的項目 ${res.skippedCount} 個`, res.skippedFiles,
+            f => `<li>${escapeHtml(f.path)}/${escapeHtml(f.name)}：${escapeHtml(f.reason)}</li>`)}
+        </div>
+        <div class="table-responsive border rounded" style="max-height: 420px;">
+          <table class="table table-sm table-hover align-middle mb-0">
+            <thead class="table-light" style="position: sticky; top: 0;">
+              <tr><th>收件人</th><th>配對值</th><th>狀態</th><th>附件</th><th>說明</th></tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+          </table>
+        </div>`;
+    }
+
+    function sendPersonalizedEmailsUi_() {
+      if (emailAttachRunning_) return;
+      if (!emailAttachPreview_ || !emailAttachJob_) return alert("請先按「預覽配對」。");
+      let base;
+      try { base = buildEmailAttachBaseRequest_(); } catch (e) { return alert(e.message); }
+      if (emailAttachSignature_(base) !== emailAttachPreview_.signature) {
+        return alert("收件人或附件設定在預覽後已變更，請重新預覽。");
+      }
+      const subject = document.getElementById('emailSubject').value;
+      const body = document.getElementById('emailBody').value;
+      const senderName = document.getElementById('emailSenderName').value;
+      if (!subject.trim()) return alert("Subject cannot be empty.");
+      if (!body.trim()) return alert("Email body cannot be empty.");
+
+      const s = emailAttachPreview_.result.summary;
+      if (!confirm(`確定寄出 ${s.willSend} 封個別郵件？\n含附件 ${s.withAttachments} 封、無附件 ${s.withoutAttachments} 封。\n\n` +
+        `若中途中斷，再按一次「寄送個別附件郵件」即可續傳，已寄出的不會重複。`)) return;
+
+      const request = Object.assign({}, base, {
+        jobId: emailAttachJob_.id,
+        subject: subject,
+        body: body,
+        senderName: senderName,
+        mappingHash: emailAttachPreview_.mappingHash
+      });
+      setEmailAttachBusy_(true);
+      runEmailAttachChunk_(request, { chunks: 0, lastRemaining: null });
+    }
+
+    function runEmailAttachChunk_(request, progress) {
+      progress.chunks++;
+      google.script.run.withSuccessHandler(res => {
+        (res.results || []).forEach(markEmailAttachRow_);
+        updateEmailAttachProgress_(res.summary);
+        const madeProgress = res.summary.sentThisCall + res.summary.failedThisCall > 0;
+        const stalled = progress.lastRemaining !== null && !madeProgress;
+        progress.lastRemaining = res.summary.remaining;
+
+        if (res.done) {
+          emailAttachJob_.done = true;
+          emailAttachPreview_ = null;   // a finished job needs a fresh preview (and new jobId) to send again
+          return finishEmailAttachRun_(res.message, 'success');
+        }
+        if (res.stoppedReason === 'TIME_BUDGET' && !stalled && progress.chunks < 100) {
+          return runEmailAttachChunk_(request, progress);
+        }
+        finishEmailAttachRun_(res.message + (stalled ? '（本批沒有進度，已停止）' : ''), 'warning');
+      }).withFailureHandler(err => {
+        finishEmailAttachRun_(`寄送中斷：${err.message}\n修正後再按「寄送個別附件郵件」即可續傳（已寄出的不會重複）。`, 'danger');
+      }).sendPersonalizedEmailBatch(request);
+    }
+
+    function markEmailAttachRow_(r) {
+      const index = emailAttachRowIndex_[r.email];
+      if (index === undefined) return;
+      const row = document.getElementById(`emailAttachRow_${index}`);
+      if (!row) return;
+      row.querySelector('.email-attach-status').innerHTML = emailAttachStatusBadge_(r.status);
+      row.querySelector('.email-attach-reason').textContent = r.error || (r.attachments.length ? `已附加：${r.attachments.join('、')}` : '');
+    }
+
+    function updateEmailAttachProgress_(summary) {
+      const total = summary.sendable || 0;
+      const processed = total - summary.remaining;
+      const pct = total > 0 ? Math.round((processed / total) * 100) : 100;
+      const bar = document.getElementById('emailAttachProgressBar');
+      bar.style.width = `${pct}%`;
+      bar.textContent = `${pct}%`;
+      document.getElementById('emailAttachProgressText').textContent =
+        `已處理 ${processed}/${total}（本批寄出 ${summary.sentThisCall}、失敗 ${summary.failedThisCall}；先前已寄出 ${summary.alreadySent}）`;
+    }
+
+    function setEmailAttachBusy_(busy) {
+      emailAttachRunning_ = busy;
+      document.getElementById('emailAttachSendBtn').disabled = busy;
+      document.getElementById('emailAttachPreviewBtn').disabled = busy;
+      if (busy) {
+        document.getElementById('emailAttachProgress').style.display = '';
+        document.getElementById('emailAttachRunResult').innerHTML = '';
+      }
+      document.getElementById('emailAttachProgressBar').classList.toggle('progress-bar-animated', busy);
+    }
+
+    function finishEmailAttachRun_(message, level) {
+      setEmailAttachBusy_(false);
+      document.getElementById('emailAttachSendBtn').disabled = !emailAttachPreview_;
+      document.getElementById('emailAttachRunResult').innerHTML =
+        `<div class="alert alert-${level} py-2 mb-0" style="white-space: pre-line">${escapeHtml(message)}</div>`;
+    }
+
+    function applyPhotoDispatchPreset_() {
+      const subjectEl = document.getElementById('emailSubject');
+      const bodyEl = document.getElementById('emailBody');
+      if ((subjectEl.value.trim() || bodyEl.value.trim()) &&
+          !confirm("套用範本會覆寫目前的主旨、內容與寄件者名稱，確定？")) return;
+      subjectEl.value = "【通知】您的學生個人照片";
+      bodyEl.value = "<p>{name} 同學您好：</p>\n<p>附件為您的個人照片，請查收。</p>\n<br>\n" +
+        "<p style=\"color: grey;\">此郵件為系統自動發送，請勿直接回覆。</p>";
+      document.getElementById('emailSenderName').value = "校園資訊系統";
+      const toggle = document.getElementById('emailAttachEnabled');
+      if (!toggle.checked) {
+        toggle.checked = true;
+        onEmailAttachToggle_();
+      }
     }
 
     /* ==================== v2.8.0: COURSE MATERIALS DRIVE ==================== */
